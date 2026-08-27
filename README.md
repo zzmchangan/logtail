@@ -106,8 +106,10 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 - **管道纪律**: `--agent ... | head -N` 当输出量超过 head 消费量时, python 被 SIGPIPE 杀, **观察到的 exit 码会偏离 0/2 契约**(如 120/141)。要截断用工具自身的 `--lines N`; 判定成败靠工具本身的退出码 + `--summary`, 别在有 `| head` 的管道里看 `$?`。
 - **`--since` 仅支持单单位**: `30s/5m/1h/90m` 可; 复合(`1h30m`)、小数(`1.5h`)、裸数字(`90`)会被 exit 2 拒绝(错误信息会明示)。
 - `--correlate <key>=<value>`: **关联键**——跨进程按共享标识对齐: 用 `correlation_keys` 配置(或内置预设 `player`/`scene`/`session`)的正则从每行**抽取** id、**归一化**(去空白/前导零)后比对, 只留匹配行, 全局时间排序。解决"同一 id 在不同进程打印成 `player=123`/`RoleId:123`/`guid:123` 串不起来"的问题。未定义 key 回退字面子串(同 `--trace`)。
-- `--discover-keys`: **关联键发现**——采样窗口, 对一批候选 key(player/scene/session/uid/request/call/order/instance + 配置里的)跑抽取, stdout 输出 JSON: 每个 key 的 `lines_with_key`/`distinct_values`/`sources`/`sample_values`。**与 correlate 同视野(含黑名单/级别过滤)**——报的数字就是 `--correlate` 实际能看到的。挑选标准: 多源出现 + distinct 高 = 好的跨服关联键; 覆盖满但 distinct=1 = 全服常量无区分度。实战发现: 本集群 scene 实例 id 主要在 `[Debug]` 行上, 主配置(含 DEBUG 黑名单)下只能看到 4 行——要跨服追 scene 链路需用无 DEBUG 黑名单的配置。
-- `--anchor <epoch>`: **钉死窗口**——把 `--since` 窗口定在 `[anchor-since, anchor]`, 不随最新日志滑动(需与 `--since` 同用, 否则 exit 2)。**跨次 `--count` 可比**: 回归实验"改前 vs 改后"用同一个 anchor 两次对比; 锚点取上一次 `--summary` 的 `latest_ts`。追加的新行被上界夹掉, 早前行不滑出。
+- `--discover-keys`: **关联键发现**——采样窗口, 对一批候选 key(player/scene/session/uid/request/call/order/instance + 配置里的)跑抽取, stdout 输出 JSON: 每个 key 的 `lines_with_key`/`distinct_values`/`sources`/`sample_values`。**与 correlate 同视野(含黑名单/级别过滤)**——报的数字就是 `--correlate` 实际能看到的。挑选标准: 多源出现 + distinct 高 = 好的跨服关联键; 覆盖满但 distinct=1 = 全服常量无区分度。实战发现: 本集群 scene 实例 id 主要在 `[Debug]` 行上, 主配置(含 DEBUG 黑名单)下只能看到 4 行——追 scene 链路加 `--allow debug` 临时放行即可(实测 4 行 -> 91 行), 不必切配置。
+- `--anchor <epoch>` / `--at "YYYY-MM-DD HH:MM:SS"`: **钉死窗口**——把 `--since` 窗口定在 `[anchor-since, anchor]`, 不随最新日志滑动(需与 `--since` 同用, 否则 exit 2;两者互斥)。**跨次 `--count` 可比**: 回归实验"改前 vs 改后"用同一个 anchor 两次对比; epoch 锚点取上一次 `--summary` 的 `latest_ts`, 人读时间用 `--at`(本地时区)。追加的新行被上界夹掉, 早前行不滑出。
+- `--keep head|tail`: **截断保留端**(默认 tail 最新)——链路起点在窗口头部时(如登录认证段), `--lines` 尾部保留会被后面的刷屏段吃掉, `--keep head` 保留头部。**超限必提示**: 截断发生时 stderr 打 `hint: 命中 X 条(共 Y 行), 只输出 Z 条`——"看到的不一定是全部"显式化。
+- `--allow <词>[,<词>...]`: **临时豁免黑名单项**(按项原文大小写不敏感)——`--allow debug` 不切双 config 就能看 `[Debug]` 行(查微服务/追 scene 链路); 豁免词不在黑名单里会 stderr 提示(防 typo 静默无效)。
 
 配置 `correlation_keys`(每个 key 一组正则, 第一个命中即取):
 ```yaml

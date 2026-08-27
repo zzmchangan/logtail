@@ -150,7 +150,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
          exclude: Optional[str] = None, summary: bool = False,
          ctx_same: int = 0, as_json: bool = False,
          focus: Optional[str] = None, correlate: Optional[str] = None,
-         hard_cap: float = DUMP_HARD_CAP) -> int:
+         hard_cap: float = DUMP_HARD_CAP, keep: str = "tail") -> int:
     """收集最近若干行(经黑名单/可选 match/时间窗), 打印后退出.
 
     收集分两阶段 (BUG0001: 大窗口下固定 --wait 会把"读不完"伪装成"没有"):
@@ -287,7 +287,11 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         return 0
 
     if not matchers and not has_correlate and not excludes:
-        out = seen[-lines_n:]           # 无 match/correlate/exclude: 输出最近 lines_n 行
+        out = seen[:lines_n] if keep == "head" else seen[-lines_n:]
+        if len(seen) > len(out):
+            print(f"logtail: hint: 窗口共 {len(seen)} 行, --lines {lines_n} 只输出"
+                  f"{'前' if keep == 'head' else '后'} {len(out)} 条 "
+                  f"(调大 --lines 或 --keep head|tail 切换保留端)", file=sys.stderr)
         for ln in out:
             print(_emit(ln, as_json))
         _provenance(probe, summary, len(out), latest_ts,
@@ -312,7 +316,6 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
                     added.add(j)
                     out_idx.append(j)
         out_idx.sort()
-        out_idx = out_idx[-lines_n:] if len(out_idx) > lines_n else out_idx
     elif context > 0:
         for i in hit_idx:
             lo = max(0, i - context)
@@ -321,9 +324,16 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
                 if j not in out_idx:
                     out_idx.append(j)
         out_idx.sort()
-        out_idx = out_idx[-lines_n:] if len(out_idx) > lines_n else out_idx
     else:
-        out_idx = hit_idx[-lines_n:]
+        out_idx = list(hit_idx)
+
+    # 统一截断点: --keep head 保留窗口头部(链路起点), 默认 tail 保留最新
+    if len(out_idx) > lines_n:
+        total = len(out_idx)
+        out_idx = out_idx[:lines_n] if keep == "head" else out_idx[-lines_n:]
+        print(f"logtail: hint: 命中 {len(hit_idx)} 条(含上下文共 {total} 行), "
+              f"--lines {lines_n} 只输出{'前' if keep == 'head' else '后'} {len(out_idx)} 行 "
+              f"(调大 --lines 或 --keep head|tail 切换保留端)", file=sys.stderr)
 
     for i in out_idx:
         print(_emit(seen[i], as_json))

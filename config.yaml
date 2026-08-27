@@ -98,6 +98,6 @@ correlation_keys:
   #
   # scene 已内置预设 (scene:/sceneId:/scene_id= 三种写法), 无需在此定义;
   # 实测是本集群最有区分度的跨服关联键 (跨 guild+scene+scenemgr),
-  # 但其 id 多在 [Debug] 行 —— 追 scene 链路需用无 DEBUG 黑名单的配置。
+  # 但其 id 多在 [Debug] 行 —— 追 scene 链路加 --allow debug 临时放行, 不必切配置。
   # 找新 key 先跑: logtail --discover-keys --config <cfg> --since 30m
   # (与 --correlate 同视野含黑名单, 报的数字就是 correlate 能看到的)。

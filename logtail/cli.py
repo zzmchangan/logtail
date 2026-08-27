@@ -55,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  --summary 的 correlate 自报 lines_with_key 用于判断正则是否写歪/key 是否有区分度。\n"
             "  --discover-keys 采样自报候选关联键的区分度/跨源分布(与 correlate 同视野含黑名单);\n"
             "  --anchor <epoch> 钉死 since 窗口 [anchor-since, anchor], 跨次 count 可比(需配 --since)。\n"
+            "  --at 'YYYY-MM-DD HH:MM:SS' 人读时间的锚点(与 --anchor 互斥); --keep head|tail 选\n"
+            "  截断保留端(链路起点在头部用 head), 超限 stderr hint 报总数; --allow debug 临时\n"
+            "  豁免黑名单项(不切双 config 看 [Debug] 行)。\n"
             "  --date 仅对含 {date} 占位符的源生效(dx 命令无占位符时给 --date 无效, stderr 会警告)。\n"
         ),
     )
@@ -99,6 +102,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="把 --since 窗口钉死在 [anchor-since, anchor] (epoch 秒), 不随最新日志"
                         "滑动 —— 跨次 --count 可比 (回归实验)。需与 --since 同用; "
                         "可用上一次 --summary 的 latest_ts 当 anchor")
+    p.add_argument("--at", default=None,
+                   help="人读时间形式的锚点, 如 --at '2026-08-27 10:09:12' (本地时区, 等价 --anchor); "
+                        "与 --anchor 互斥, 需与 --since 同用")
+    p.add_argument("--keep", choices=["head", "tail"], default="tail",
+                   help="--lines 截断时保留哪端: tail=最新(默认), head=窗口头部(链路起点, "
+                        "防被后面的刷屏段吃掉)。超限时 stderr 会打 hint 报总数")
+    p.add_argument("--allow", default=None,
+                   help="临时豁免黑名单项(逗号/空格分隔, 按项原文大小写不敏感), 如 "
+                        "--allow debug —— 不用切双 config 就能看 [Debug] 行; 豁免词不在黑名单里会 stderr 提示")
     p.add_argument("--discover-keys", action="store_true",
                    help="采样窗口自报候选关联键的区分度/跨源分布(JSON), 找出最佳跨服关联键")
     p.add_argument("--count", "--cnt", action="store_true",
@@ -127,6 +139,16 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(f"logtail: 配置错误: {exc}", file=sys.stderr)
         return 2
+    # --at: 人读时间锚点, 换算成 epoch 后与 --anchor 同语义
+    if args.at is not None:
+        if args.anchor is not None:
+            print("logtail: --at 与 --anchor 互斥 (都是锚点, 给一个即可)", file=sys.stderr)
+            return 2
+        try:
+            args.anchor = _parse_at(args.at)
+        except ValueError as exc:
+            print(f"logtail: --at 无效: {exc}", file=sys.stderr)
+            return 2
     if args.anchor is not None and not since:
         print("logtail: --anchor 需与 --since 同用 (它定义的是 since 窗口的钉死锚点)",
               file=sys.stderr)
@@ -157,6 +179,18 @@ def main(argv=None) -> int:
             cfg.case_sensitive = True
         if args.anchor:
             cfg.anchor = args.anchor
+        # --allow: 临时豁免黑名单项 (不切双 config 就能看被滤的视野)
+        if args.allow:
+            import re as _re
+            allows = {w.strip().strip('"').lower()
+                      for w in _re.split(r"[,\s]+", args.allow.strip()) if w.strip()}
+            lowered = {b.strip().strip('"').lower() for b in cfg.blacklist}
+            unmatched = allows - lowered
+            if unmatched:
+                print(f"logtail: hint: --allow 的这些词不在黑名单里(检查拼写): "
+                      f"{', '.join(sorted(unmatched))}", file=sys.stderr)
+            cfg.blacklist = [b for b in cfg.blacklist
+                             if b.strip().strip('"').lower() not in allows]
         cfg.validate()
         # --date 只对含 {date} 占位符的源生效; dx 源若命令里没写 {date}
         # (且 dx CLI 不接受日期参数), 给了 --date 也仍读当天 —— 明示而非静默。
@@ -211,7 +245,7 @@ def main(argv=None) -> int:
                         count_only=args.count, exclude=args.exclude,
                         summary=args.summary, ctx_same=args.ctx_same,
                         as_json=args.as_json, focus=args.focus,
-                        correlate=args.correlate)
+                        correlate=args.correlate, keep=args.keep)
         except RulePatternError as exc:
             print(f"logtail: --match 规则错误: {exc}", file=sys.stderr)
             return 2
@@ -237,6 +271,22 @@ def _parse_duration(text: Optional[str]) -> Optional[float]:
     n = int(m.group(1))
     unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
     return n * unit
+
+
+_AT_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+               "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%f")
+
+
+def _parse_at(text: str) -> float:
+    """把人读时间 'YYYY-MM-DD HH:MM:SS[.fff]' 解析为本地时区 epoch 秒."""
+    import datetime
+    s = text.strip()
+    for fmt in _AT_FORMATS:
+        try:
+            return datetime.datetime.strptime(s, fmt).timestamp()
+        except ValueError:
+            continue
+    raise ValueError(f"{text!r} (可用格式: 'YYYY-MM-DD HH:MM:SS', 本地时区)")
 
 
 if __name__ == "__main__":

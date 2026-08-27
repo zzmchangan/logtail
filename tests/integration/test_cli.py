@@ -90,7 +90,8 @@ class TestOutputContract(CliCase):
         for needle in ("三层读取模型", "8MB", "--date", "--correlate",
                        "--ctx-same", "--focus", "--diagnose", "假阴性",
                        "硬上限", "读取未完成", "字面量", "head",
-                       "case-sensitive", "anchor", "discover-keys"):
+                       "case-sensitive", "anchor", "discover-keys",
+                       "--at", "--keep", "--allow"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -261,6 +262,94 @@ class TestFilteringMatrix(CliCase):
         r = self.cli("--agent", "--config", cfg2, "--anchor", "123")
         self.assertEqual(r.returncode, 2)
         self.assertIn("--since", r.stderr)
+
+    def test_keep_head_and_truncation_hint(self):
+        """痛点#1: 链路头部关键时 --lines 尾部保留会被后面刷屏段吃掉.
+
+        --keep head 保留窗口头部; 超限时 stderr 提示命中/输出条数。
+        """
+        d = self.dir
+        with open(os.path.join(d, "keep.log"), "w") as f:
+            for i in range(10):
+                f.write(f"[2026-08-27 10:00:{i:02d}] auth step {i}\n")
+            for i in range(10, 20):
+                f.write(f"[2026-08-27 10:01:{i - 10:02d}] flood padding {i}\n")
+        cfg2 = os.path.join(d, "keep.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
+                    f'    pattern: "keep.log"\nblacklist: []\n')
+        base = ["--agent", "--config", cfg2, "--wait", "1", "--since", "24h"]
+        # 默认 tail: --lines 3 只留最后的刷屏段 (登录起点被吃掉)
+        r = self.cli(*base, "--lines", "3")
+        self.assertNotIn("auth", r.stdout)
+        self.assertIn("flood", r.stdout)
+        # keep head: 保留窗口头部 (登录认证段)
+        r = self.cli(*base, "--lines", "3", "--keep", "head")
+        self.assertIn("auth step 0", r.stdout)
+        self.assertNotIn("flood", r.stdout)
+        # match 场景同样支持: 命中散布, head 留最早命中
+        r = self.cli(*base, "--lines", "2", "--keep", "head", "--match", "auth")
+        self.assertEqual(r.stdout.strip().splitlines()[0].strip().endswith("auth step 0"), True)
+        self.assertNotIn("auth step 5", r.stdout)
+        # 截断提示: 窗口 20 行只输出 3 条 -> stderr hint
+        r = self.cli(*base, "--lines", "3")
+        self.assertIn("hint", r.stderr)
+        self.assertIn("20", r.stderr)                              # 窗口总行数
+
+    def test_at_human_time_anchor(self):
+        """痛点#2: --at "YYYY-MM-DD HH:MM:SS" 人读时间, 不用手算 epoch."""
+        d = self.dir
+        with open(os.path.join(d, "at.log"), "w") as f:
+            f.write("[2026-08-27 10:00:01] before at\n")
+            f.write("[2026-08-27 10:00:03] at point\n")
+            f.write("[2026-08-27 10:00:05] after at\n")
+        cfg2 = os.path.join(d, "at.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
+                    f'    pattern: "at.log"\nblacklist: []\n')
+        base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50"]
+        # --at 10:00:03, since 60s: 窗口 [10:00:03-60, 10:00:03] -> 前两行, 第三行被夹掉
+        r = self.cli(*base, "--since", "60s", "--at", "2026-08-27 10:00:03")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("before at", r.stdout)
+        self.assertIn("at point", r.stdout)
+        self.assertNotIn("after at", r.stdout)
+        # 无效格式 exit 2
+        r = self.cli(*base, "--since", "60s", "--at", "not a time")
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+        # --at 与 --anchor 互斥
+        r = self.cli(*base, "--since", "60s", "--at", "2026-08-27 10:00:03",
+                     "--anchor", "123")
+        self.assertEqual(r.returncode, 2)
+        # --at 也需 --since
+        r = self.cli(*base, "--at", "2026-08-27 10:00:03")
+        self.assertEqual(r.returncode, 2)
+
+    def test_allow_bypasses_blacklist(self):
+        """痛点#3: --allow 单参数豁免黑名单项, 不用切双 config."""
+        d = self.dir
+        with open(os.path.join(d, "allow.log"), "w") as f:
+            f.write("[2026-08-27 10:00:01] [Debug] ms detail line\n")
+            f.write("[2026-08-27 10:00:02] heartbeat spam\n")
+            f.write("[2026-08-27 10:00:03] normal line\n")
+        cfg2 = os.path.join(d, "allow.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
+                    f'    pattern: "allow.log"\nblacklist: ["DEBUG", "heartbeat"]\n')
+        base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50",
+                "--since", "24h"]
+        # 默认: DEBUG 黑名单滤掉 [Debug] 行
+        r = self.cli(*base)
+        self.assertNotIn("ms detail", r.stdout)
+        # --allow debug (大小写不敏感): 只豁免 DEBUG, heartbeat 仍滤
+        r = self.cli(*base, "--allow", "debug")
+        self.assertIn("ms detail", r.stdout)
+        self.assertNotIn("heartbeat", r.stdout)
+        # 豁免不存在的词 -> stderr 提示 (防 typo 静默无效)
+        r = self.cli(*base, "--allow", "no_such_word")
+        self.assertIn("hint", r.stderr)
+        self.assertIn("no_such_word", r.stderr)
 
     def test_summary_backlog_complete_field(self):
         """强建议#2: --summary 必须自报读全性 (backlog_complete)."""
