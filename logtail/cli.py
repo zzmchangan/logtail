@@ -14,6 +14,7 @@ import sys
 
 from . import __version__
 from .config import ConfigError, apply_cli, load_config
+from .rules import RulePatternError
 from .tui import main as tui_main
 
 

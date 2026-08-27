@@ -29,3 +29,17 @@ keywords:
   - "ERROR"
   - "timeout"
   - "Assert"
+
+# 关联键: --correlate player=123 时按这些正则从每行抽取 id、归一化(去空白/前导零)
+# 后跨源对齐。同一逻辑 id 在不同进程写法不同 (Guid: / roleId: / player=), 字面匹配
+# 串不起来, 抽取+归一化后即可跨进程跟一条逻辑链路。
+# 未定义的 key 回退字面子串 (同 --trace); --summary 的 correlate 自报
+# lines_with_key 可判断正则是否写歪 / key 是否有区分度。
+correlation_keys:
+  - name: player
+    extract:
+      - "Guid[:=] *(\\d+)"          # [Player Guid:1276679028765 ...] (已实测可抽到)
+      - "roleId[:=] *(\\d+)"
+      - "player[:=] *(\\d+)"
+  # 注意: s=xxx&c=xxx token 实测窗口内每行都有 (lines_with_key==lines_total),
+  # 是全服常量、无区分度, 不作关联键; 若确认有请求级唯一 token 再加。
