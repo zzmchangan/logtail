@@ -58,3 +58,12 @@ PYTHONPATH=. python3 -m unittest discover -s tests/fuzz         # 固定种子�
 
 - 一批改动一个 commit,信息说清"改了什么 + 为什么 + 怎么验证的"。
 - commit message 末尾带 `Co-Authored-By: Claude <noreply@anthropic.com>`(AI 改动时)。
+
+## 文档同步(改动语义 = 必须三处同步)
+
+任何**行为/语义变更**(新 flag、语义修正、新的警告/限制),以下三处必须一起更新,
+漏一处 = 改动不完整:
+1. **README** 的 Agent 用法/输出契约章节;
+2. **`--help` epilog**(`logtail/cli.py` 的 `build_parser`)——它是 AI 的第一信源;
+3. **集成测试** `test_help_maintained_with_reading_model` 守护关键条目不漂移,
+   新增关键语义时往该测试的检查清单里加一行。

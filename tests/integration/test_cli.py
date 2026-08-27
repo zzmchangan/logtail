@@ -84,6 +84,13 @@ class TestOutputContract(CliCase):
         self.assertIn("--correlate", r.stdout)
         self.assertEqual(r.stderr, "")
 
+    def test_help_maintained_with_reading_model(self):
+        """--help 必须与语义同步维护: 三层读取模型/上限/各 flag 作用域都要在."""
+        r = self.cli("--help")
+        for needle in ("三层读取模型", "8MB", "--date", "--correlate",
+                       "--ctx-same", "--focus", "--diagnose", "假阴性"):
+            self.assertIn(needle, r.stdout)
+
     def test_version(self):
         r = self.cli("--version")
         self.assertEqual(r.returncode, 0)

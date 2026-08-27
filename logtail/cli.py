@@ -28,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "非交互 / 脚本 / AI 场景必须加 --agent, 否则进入全屏交互 TUI (curses, 需真实终端)。\n"
             "\n"
+            "三层读取模型 (三个独立旋钮, --lines 不是'读多少行'而是输出上限):\n"
+            "  采集量: --since(优先, 按时间戳定位, 8MB/文件上限, 触顶 stderr 警告) 或 --history/--lines。\n"
+            "  过滤:   --match/--exclude/--level/--focus/--correlate (--exclude 单独用也生效)。\n"
+            "  输出量: --lines 只限正文条数; --count 统计全部读取量、不受 --lines 限。\n"
+            "\n"
             "输出契约 (AI Agent / 脚本接入):\n"
             "  日志正文只写 stdout, 错误/提示写 stderr (可 2>/dev/null 只取正文)。\n"
             "  每行 = '{时间戳} {来源:<12} {正文}'; 退出码: 0=成功(含 0 命中), 2=配置/参数/正则错误。\n"
@@ -43,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  --focus <源名> 单源聚焦(按配置源名筛, dx/glob 均有效, 与 --ctx-same 互补)。\n"
             "  --correlate key=value 关联键(抽取+归一化跨源对齐; 未定义 key 回退字面子串);\n"
             "  --summary 的 correlate 自报 lines_with_key 用于判断正则是否写歪/key 是否有区分度。\n"
+            "  --date 仅对含 {date} 占位符的源生效(dx 命令无占位符时给 --date 无效, stderr 会警告)。\n"
         ),
     )
     p.add_argument("--config", "-c", default=None,
