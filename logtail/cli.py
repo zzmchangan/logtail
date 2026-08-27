@@ -48,7 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  --wait(dump) 是backlog完成后实时跟随的时长(约1s无新行提前返回); 历史窗口读取\n"
             "  由信号驱动等完(30s硬上限), 超时 stderr 警告'读取未完成'——空结果勿当结论。\n"
             "  --ctx-same N 仅 agent+match(同进程上下文, 与 -C 全局互补); --diagnose 独立健康检查(不 tail)。\n"
-            "  --focus <源名> 单源聚焦(按配置源名筛, dx/glob 均有效, 与 --ctx-same 互补)。\n"
+            "  --focus <源名> 单源聚焦(按配置源名精确匹配, 未知/typo exit 2 并列出可用名)。\n"
+            "  管道纪律: | head 超量截断会偏离 exit 0/2 契约(SIGPIPE); 截断用 --lines N, 判 $? 前别接 head。\n"
             "  --correlate key=value 关联键(抽取+归一化跨源对齐; 未定义 key 回退字面子串);\n"
             "  --summary 的 correlate 自报 lines_with_key 用于判断正则是否写歪/key 是否有区分度。\n"
             "  --date 仅对含 {date} 占位符的源生效(dx 命令无占位符时给 --date 无效, stderr 会警告)。\n"
@@ -128,6 +129,13 @@ def main(argv=None) -> int:
             cfg.level = args.level.upper()
         if args.trace:
             cfg.trace = args.trace
+        # fail-fast: --focus 按配置源名精确匹配; typo/大小写错若静默 0 行,
+        # 会伪装成"没日志"(第三场演练抓出的假阴性盲区)。列出可用名便于自查。
+        if args.focus and args.focus not in [s.name for s in cfg.sources]:
+            names = ", ".join(s.name for s in cfg.sources)
+            print(f"logtail: --focus 无效: {args.focus!r} 不在配置的日志源里 "
+                  f"(精确匹配, 大小写敏感; 可用: {names})", file=sys.stderr)
+            return 2
         cfg.validate()
         # --date 只对含 {date} 占位符的源生效; dx 源若命令里没写 {date}
         # (且 dx CLI 不接受日期参数), 给了 --date 也仍读当天 —— 明示而非静默。
@@ -198,7 +206,8 @@ def _parse_duration(text: Optional[str]) -> Optional[float]:
     text = text.strip().lower()
     m = __import__("re").match(r"^(\d+)([smhd])$", text)
     if not m:
-        raise ValueError(f"--since 无效: {text!r} (可用 30s/5m/1h)")
+        raise ValueError(f"--since 无效: {text!r} (仅支持单单位, 如 30s/5m/1h/90m; "
+                         f"不支持复合(1h30m)/小数(1.5h)/裸数字(90))")
     n = int(m.group(1))
     unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
     return n * unit

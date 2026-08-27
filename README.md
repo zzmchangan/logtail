@@ -101,7 +101,9 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 - `--ctx-same N`: **同源上下文**——命中行连同"同进程"前后各 N 行 (跳过其它进程)。与 `-C`(全局时间邻居)互补: `-C` 看系统面, `--ctx-same` 看单进程因果。
 - `--json`: 每行输出一个 JSON 对象 (`ts`/`ts_seconds`/`source`/`level`/`text`/`seq`), 供编程级加工; 仍走同一套过滤管线。
 - `--diagnose`: **只做发现健康检查**(不 tail 不读正文), 输出 JSON: 每源 `files`/`discovered`/`dx_error`/`latest_ts`。
-- `--focus <源名>`: **单源聚焦**——只输出指定来源的行(按配置里的源名筛, dx/glob 源均有效), 与 `--ctx-same` 互补看单进程。
+- `--focus <源名>`: **单源聚焦**——只输出指定来源的行(按配置里的源名筛, dx/glob 源均有效), 与 `--ctx-same` 互补看单进程。**精确匹配、大小写敏感**; 未知/typo 源名 fail-fast exit 2 并列出可用源名(防静默 0 行假阴性)。
+- **管道纪律**: `--agent ... | head -N` 当输出量超过 head 消费量时, python 被 SIGPIPE 杀, **观察到的 exit 码会偏离 0/2 契约**(如 120/141)。要截断用工具自身的 `--lines N`; 判定成败靠工具本身的退出码 + `--summary`, 别在有 `| head` 的管道里看 `$?`。
+- **`--since` 仅支持单单位**: `30s/5m/1h/90m` 可; 复合(`1h30m`)、小数(`1.5h`)、裸数字(`90`)会被 exit 2 拒绝(错误信息会明示)。
 - `--correlate <key>=<value>`: **关联键**——跨进程按共享标识对齐: 用 `correlation_keys` 配置(或内置预设 `player`/`session`)的正则从每行**抽取** id、**归一化**(去空白/前导零)后比对, 只留匹配行, 全局时间排序。解决"同一 id 在不同进程打印成 `player=123`/`RoleId:123`/`guid:123` 串不起来"的问题。未定义 key 回退字面子串(同 `--trace`)。
 
 配置 `correlation_keys`(每个 key 一组正则, 第一个命中即取):

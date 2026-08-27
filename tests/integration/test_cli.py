@@ -89,7 +89,7 @@ class TestOutputContract(CliCase):
         r = self.cli("--help")
         for needle in ("三层读取模型", "8MB", "--date", "--correlate",
                        "--ctx-same", "--focus", "--diagnose", "假阴性",
-                       "硬上限", "读取未完成", "字面量"):
+                       "硬上限", "读取未完成", "字面量", "head"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -123,6 +123,20 @@ class TestOutputContract(CliCase):
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("Traceback", r.stderr)
         self.assertIn("level", r.stderr.lower())
+
+    def test_exit_2_unknown_focus(self):
+        """第三场演练回归: --focus 未知/typo/大小写错 必须 fail-fast 并列出可用源名.
+
+        旧行为: 静默 count=0 / exit=0 / stderr 空 —— 假阴性防护的最后盲区
+        (--diagnose/--summary 只证明"源活着", 证明不了"focus 拼对了")。
+        """
+        for bad in ("scne", "GUILD", "no-such-source"):
+            r = self.A("--focus", bad, "--count")
+            self.assertEqual(r.returncode, 2, f"--focus {bad} 应 exit 2")
+            self.assertNotIn("Traceback", r.stderr)
+            # 错误信息里列出可用源名, typo 一眼可见
+            self.assertIn("scene", r.stderr)
+            self.assertIn("guild", r.stderr)
 
     def test_exit_2_bad_source_format(self):
         r = self.cli("--agent", "--config", self.cfg, "-s", "nopathsep")
