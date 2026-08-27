@@ -94,6 +94,7 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 ```
 - 前缀与交互版一致 (`[时间戳] 来源 正文`); Agent 能看出日志来自哪个进程。
 - `--match` 复用关键词写法: 裸词=子串, `re:`=正则, 大小写不敏感; 逗号/空格分隔多词 = OR。`--exclude` 命中即剔除。
+  ⚠️ **`--match "a|b"` 的 `|` 是字面量不是正则 OR**——多词 OR 用空格/逗号分隔, 或 `re:(a|b|c)`。裸词是子串, 也会撞无关文本(如 `Dragon` 命中账号名 `dragon2`), 要词边界就上 `re:`。
 - `-C N` 结合 `--match`: 每条命中行连带**前后各 N 行**。**`-C 5s`/`-C 1m` 按时间窗只在交互版可用** (`/context 5s` 或 TUI 内 `-C 5s`); agent 的 `-C` 只接受**行数**。
 - `--since 5m`: 只看最近一段时间(按日志自带时间戳), 跳过早期杂音; 以最新日志为参考, 历史日 `--date` 也能用。
 - `--level ERROR`: 只保留 >= 该级别的行; `--trace <词>`: 跨源纯净命中行(无邻居)。
@@ -143,7 +144,7 @@ correlation_keys:
 - **`--summary`**: 把"发现诊断"(JSON)打到 **stderr**。**空结果/`--count 0` 时先看 stderr**: 有 `warning:` 或 JSON 里 `total_files==0` / 某源 `discovered:false` / `dx_error` 非空 → 是"**源没被发现**", 不是"没错误" (避免 'exit 0 + 空输出' 假阴性); 都正常 `files>0` 才可信。stdout 仍只放日志/计数。
 - **`--json` 契约**: 每行一个 JSON 对象 `{"ts","ts_seconds","source","level","text","seq"}`。`ts` 供人读/对齐窗口, `ts_seconds` 为 epoch 秒供排序比较, `seq` 供确定性重放; `--count`/`--summary` 不受影响(仍只在各自位置)。
 - **`--summary` 锚点**: JSON 里含 `latest_ts`——`--since` 实际锚定的"最新一条日志时间戳"。agent 据它自校验"这个窗口对齐的是哪个时间", 尤其注意 GM 调时间(multiTimeOffset)会让日志时间≠墙钟, 别用墙钟去对。
-- **`--diagnose`**: 独立健康检查(不 tail), JSON 到 stdout。**拿到空结果先跑它**: 若某源 `discovered:false`/`dx_error` 非空 → 源没被找到, 别下"无错误"结论。
+- **`--diagnose`**: 独立健康检查(不 tail), JSON 到 stdout。**拿到空结果先跑它**: 若某源 `discovered:false`/`dx_error` 非空 → 源没被找到, 别下"无错误"结论。判"源活着"看 `files>0 且 discovered=true`; `latest_ts` 在活跃写入的文件上可能**瞬态为 null**(尾部块恰好无完整时间戳行), 重跑即恢复, 别单依赖它。
 - **`--since` 的优先级与定位**: 给了 `--since` 就**按时间戳定位采集起点**(`--lines`/`--history` 不再决定回溯量)。主路径是**时间戳二分定位**——日志按行追加、时间戳单调不减时,几十次 seek 即可定位任意久远窗口的起点,**不受文件大小限制**(474MB 也能回看 2h)。二分失败(无时间戳行/非单调/超长行)才退化到**尾部 8MB 扫描兜底**,此时 stderr 打 `warning: ... 退化为尾部 8MB 扫描`——窗口前部旧行读不到,`--match` 可能漏掉窗口边缘命中。
 - **`--count` 的统计范围**: 统计**全部读取量**(受上面 8MB cap 影响), **不受 `--lines` 限制**——`--lines` 只是正文输出条数上限。即 `count = 窗口内真实命中数`, `lines = 你这次想看几条`。
 - **`--date` 的生效范围**: 只对含 `{date}`/`{YYYY}` 等占位符的源生效(path/pattern/**dx 命令里写了 `{date}`**)。dx 命令不含占位符时给 `--date` 无效(仍读当天), stderr 会打 warning 明示。dx 源看历史某天需 dx 命令本身支持日期参数。
@@ -163,6 +164,7 @@ correlation_keys:
 
 **两条还不兴写进别处的坑**：
 - `--source NAME:目录:pattern` 的 PATH 是**目录不是文件**——直连单文件要用 glob 目录 + pattern；要用 dx 源只能改 config。
+- `--source` 临时加的源**同样受主配置黑名单约束**：主 config 的 `"DEBUG"` 黑名单会把微服务 `[Debug]` 行全滤掉，`--focus bar` 显示为空不是"源没发现"。查微服务切 `config.ms.yaml`。
 - `--lines` 要 ≥ 目标行跨度，太小读不到周期性行（如 `GCInfo`）——这类行每隔几秒一条，`--lines 30` 会只取到最近 30 条而把更早的漏掉。
 
 **游戏服务器专属认知**：跨进程跟一条逻辑链路，前提是那个 id 真的出现在多服日志里；playerId 偏 Scene 侧。若想跨服追请求级链路，需游戏在日志里注入稳定的 callId / requestId。

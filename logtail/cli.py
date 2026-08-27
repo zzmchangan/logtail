@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  采集量: --since(优先, 时间戳二分定位覆盖全文件不受大小限; 二分失败退化尾部\n"
             "          8MB 扫描并 stderr 警告) 或 --history/--lines。\n"
             "  过滤:   --match/--exclude/--level/--focus/--correlate (--exclude 单独用也生效)。\n"
+            "          注意: --match 'a|b' 的 | 是字面量非正则OR; 多词OR用空格/逗号或 re:(a|b)。\n"
             "  输出量: --lines 只限正文条数; --count 统计全部读取量、不受 --lines 限。\n"
             "\n"
             "输出契约 (AI Agent / 脚本接入):\n"

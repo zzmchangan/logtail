@@ -89,7 +89,7 @@ class TestOutputContract(CliCase):
         r = self.cli("--help")
         for needle in ("三层读取模型", "8MB", "--date", "--correlate",
                        "--ctx-same", "--focus", "--diagnose", "假阴性",
-                       "硬上限", "读取未完成"):
+                       "硬上限", "读取未完成", "字面量"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -157,6 +157,13 @@ class TestFilteringMatrix(CliCase):
     def test_match_multi_or(self):
         r = self.A("--match", "crash slow")
         self.assertEqual(len(r.stdout.strip().splitlines()), 2)
+
+    def test_match_pipe_is_literal(self):
+        """排坑回归: --match 'a|b' 的 | 是字面量, 不是正则 OR (0 命中而非两词并集)."""
+        r = self.A("--match", "tick|dump")
+        self.assertEqual(r.stdout.strip(), "")                    # 无行含字面 "tick|dump"
+        r = self.A("--match", "re:(tick|dump)")
+        self.assertEqual(len(r.stdout.strip().splitlines()), 2)   # 正则 OR 才是并集
 
     def test_exclude(self):
         r = self.A("--match", "player=100", "--exclude", "crash")
