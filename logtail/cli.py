@@ -56,8 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  --discover-keys 采样自报候选关联键的区分度/跨源分布(与 correlate 同视野含黑名单);\n"
             "  --anchor <epoch> 钉死 since 窗口 [anchor-since, anchor], 跨次 count 可比(需配 --since)。\n"
             "  --at 'YYYY-MM-DD HH:MM:SS' 人读时间的锚点(与 --anchor 互斥); --keep head|tail 选\n"
-            "  截断保留端(链路起点在头部用 head), 超限 stderr hint 报总数; --allow debug 临时\n"
-            "  豁免黑名单项(不切双 config 看 [Debug] 行)。\n"
+            "  截断保留端(链路起点在头部用 head), 超限 stderr hint 报总数。\n"
+            "  动态黑名单(仅本次运行不写回, /save 才落盘): --blacklist-del DEBUG 放行 [Debug] 行、\n"
+            "  --no-blacklist 全清(配 --source 一步拉起微服务视野)、--blacklist-add 临时追加。\n"
             "  --date 仅对含 {date} 占位符的源生效(dx 命令无占位符时给 --date 无效, stderr 会警告)。\n"
         ),
     )
@@ -108,9 +109,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--keep", choices=["head", "tail"], default="tail",
                    help="--lines 截断时保留哪端: tail=最新(默认), head=窗口头部(链路起点, "
                         "防被后面的刷屏段吃掉)。超限时 stderr 会打 hint 报总数")
+    p.add_argument("--blacklist-add", default=None,
+                   help="追加黑名单项(逗号/空格分隔), 仅本次运行、不写回 config")
+    p.add_argument("--blacklist-del", default=None,
+                   help="精确移除黑名单项(逗号/空格分隔, 按项原文大小写不敏感), 如 "
+                        "--blacklist-del DEBUG —— 不切双 config 就能看 [Debug] 行; "
+                        "仅本次运行、不写回 config(TUI 的 /save 才落盘)")
+    p.add_argument("--no-blacklist", action="store_true",
+                   help="清空全部黑名单(查微服务/sceneId 一步到位), 仅本次运行、不写回 config")
     p.add_argument("--allow", default=None,
-                   help="临时豁免黑名单项(逗号/空格分隔, 按项原文大小写不敏感), 如 "
-                        "--allow debug —— 不用切双 config 就能看 [Debug] 行; 豁免词不在黑名单里会 stderr 提示")
+                   help="deprecated 别名, 等价 --blacklist-del")
     p.add_argument("--discover-keys", action="store_true",
                    help="采样窗口自报候选关联键的区分度/跨源分布(JSON), 找出最佳跨服关联键")
     p.add_argument("--count", "--cnt", action="store_true",
@@ -179,18 +187,30 @@ def main(argv=None) -> int:
             cfg.case_sensitive = True
         if args.anchor:
             cfg.anchor = args.anchor
-        # --allow: 临时豁免黑名单项 (不切双 config 就能看被滤的视野)
-        if args.allow:
+        # 动态黑名单三件套: --no-blacklist 清空 / --blacklist-del 精确移除(--allow 为
+        # 其别名) / --blacklist-add 追加。全部仅影响本次运行, 不写回 config
+        # (TUI 的 /save 才落盘, 两处语义不同, 文档须区分)。
+        if args.no_blacklist or args.blacklist_del or args.blacklist_add or args.allow:
             import re as _re
-            allows = {w.strip().strip('"').lower()
-                      for w in _re.split(r"[,\s]+", args.allow.strip()) if w.strip()}
-            lowered = {b.strip().strip('"').lower() for b in cfg.blacklist}
-            unmatched = allows - lowered
-            if unmatched:
-                print(f"logtail: hint: --allow 的这些词不在黑名单里(检查拼写): "
-                      f"{', '.join(sorted(unmatched))}", file=sys.stderr)
-            cfg.blacklist = [b for b in cfg.blacklist
-                             if b.strip().strip('"').lower() not in allows]
+            if args.no_blacklist:
+                cfg.blacklist = []
+            dels = set()
+            for words in (args.blacklist_del, args.allow):
+                if words:
+                    dels |= {w.strip().strip('"').lower()
+                             for w in _re.split(r"[,\s]+", words.strip()) if w.strip()}
+            if dels:
+                lowered = {b.strip().strip('"').lower() for b in cfg.blacklist}
+                unmatched = dels - lowered
+                if unmatched:
+                    print(f"logtail: hint: --blacklist-del 的这些词不在黑名单里"
+                          f"(检查拼写): {', '.join(sorted(unmatched))}", file=sys.stderr)
+                cfg.blacklist = [b for b in cfg.blacklist
+                                 if b.strip().strip('"').lower() not in dels]
+            if args.blacklist_add:
+                for w in _re.split(r"[,\s]+", args.blacklist_add.strip()):
+                    if w and w not in cfg.blacklist:
+                        cfg.blacklist.append(w)
         cfg.validate()
         # --date 只对含 {date} 占位符的源生效; dx 源若命令里没写 {date}
         # (且 dx CLI 不接受日期参数), 给了 --date 也仍读当天 —— 明示而非静默。

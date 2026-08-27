@@ -91,7 +91,7 @@ class TestOutputContract(CliCase):
                        "--ctx-same", "--focus", "--diagnose", "假阴性",
                        "硬上限", "读取未完成", "字面量", "head",
                        "case-sensitive", "anchor", "discover-keys",
-                       "--at", "--keep", "--allow"):
+                       "--at", "--keep", "--blacklist-del", "--no-blacklist"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -350,6 +350,59 @@ class TestFilteringMatrix(CliCase):
         r = self.cli(*base, "--allow", "no_such_word")
         self.assertIn("hint", r.stderr)
         self.assertIn("no_such_word", r.stderr)
+
+    def test_dynamic_blacklist_family(self):
+        """动态黑名单三件套: --blacklist-add / --blacklist-del / --no-blacklist.
+
+        仅影响本次运行、不写回 config; --no-blacklist 与 --source 组合一步到位。
+        """
+        d = self.dir
+        with open(os.path.join(d, "bl.log"), "w") as f:            # 自建夹具, 无顺序依赖
+            f.write("[2026-08-27 10:00:01] [Debug] ms detail line\n"
+                    "[2026-08-27 10:00:02] heartbeat spam\n"
+                    "[2026-08-27 10:00:03] normal line\n")
+        cfg2 = os.path.join(d, "bl.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
+                    f'    pattern: "bl.log"\nblacklist: ["DEBUG", "heartbeat"]\n')
+        base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50",
+                "--since", "24h"]
+        # --blacklist-del DEBUG: 等价 --allow debug (移除指定项, 其余仍滤)
+        r = self.cli(*base, "--blacklist-del", "DEBUG")
+        self.assertIn("ms detail", r.stdout)
+        self.assertNotIn("heartbeat", r.stdout)
+        # --no-blacklist: 全清 (heartbeat 也回来)
+        r = self.cli(*base, "--no-blacklist")
+        self.assertIn("ms detail", r.stdout)
+        self.assertIn("heartbeat", r.stdout)
+        # --blacklist-add normal: 追加过滤项
+        r = self.cli(*base, "--blacklist-add", "normal")
+        self.assertNotIn("normal line", r.stdout)
+        # --no-blacklist + --blacklist-add: 清空后再加 (只滤新加的)
+        r = self.cli(*base, "--no-blacklist", "--blacklist-add", "heartbeat")
+        self.assertIn("ms detail", r.stdout)
+        self.assertNotIn("heartbeat", r.stdout)
+        # --blacklist-del typo 提示
+        r = self.cli(*base, "--blacklist-del", "nope_word")
+        self.assertIn("hint", r.stderr)
+        # 不写回 config: 配置文件内容不变
+        with open(cfg2) as f:
+            self.assertIn('"DEBUG"', f.read())
+
+    def test_no_blacklist_with_source_combo(self):
+        """设计点: --no-blacklist + --source 临时源一次到位 (微服务场景)."""
+        d = self.dir
+        with open(os.path.join(d, "bl2.log"), "w") as f:            # 自建夹具, 无顺序依赖
+            f.write("[2026-08-27 10:00:01] [Debug] ms detail line\n")
+        cfg2 = os.path.join(d, "bl2.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
+                    f'    pattern: "bl2.log"\nblacklist: ["DEBUG"]\n')
+        r = self.cli("--agent", "--config", cfg2, "--wait", "1",
+                     "--lines", "50", "--since", "24h",
+                     "-s", f"ms:{d}:bl2.log", "--no-blacklist", "--focus", "ms")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("ms detail", r.stdout)                       # [Debug] 行放行
 
     def test_summary_backlog_complete_field(self):
         """强建议#2: --summary 必须自报读全性 (backlog_complete)."""

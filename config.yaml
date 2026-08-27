@@ -48,7 +48,7 @@ log_sources:
   # 微服务日志在 /data/vm-ro3-deploys/log/ms/(TeamService/BarService), dx 抓不到 -> 用 glob。
   # 多实例: team-service-{0,1}/team_service.log; glob 的 path 必须存在(配置会校验)。
   # ⚠️ 这些微服务日志几乎全为 [Debug] 级, 会被黑名单 "DEBUG"(大小写不敏感)滤掉,
-  #    查它们时需临时把 "DEBUG" 从 blacklist 移除, 否则 --focus team/bar 会显示为空(不是没日志)。
+  #    查它们时加 --blacklist-del DEBUG(或 --no-blacklist)临时放行, 否则 --focus team/bar 会显示为空(不是没日志)。
   - name: team
     path: /data/vm-ro3-deploys/log/ms/TeamService
     pattern: "team-service-*/team_service.log"
@@ -98,6 +98,6 @@ correlation_keys:
   #
   # scene 已内置预设 (scene:/sceneId:/scene_id= 三种写法), 无需在此定义;
   # 实测是本集群最有区分度的跨服关联键 (跨 guild+scene+scenemgr),
-  # 但其 id 多在 [Debug] 行 —— 追 scene 链路加 --allow debug 临时放行, 不必切配置。
+  # 但其 id 多在 [Debug] 行 —— 追 scene 链路加 --blacklist-del debug 临时放行(或 --no-blacklist), 不必切配置。
   # 找新 key 先跑: logtail --discover-keys --config <cfg> --since 30m
   # (与 --correlate 同视野含黑名单, 报的数字就是 correlate 能看到的)。
