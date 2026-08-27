@@ -31,6 +31,11 @@ _PRESETS: Dict[str, List[str]] = {
         r"roleid[:=]\s*(\d+)",
         r"guid[:=]\s*(\d+)",
     ],
+    # 副本/场景实例 id: 实测跨 guild+scene+scenemgr 且区分度高 (discover-keys 发现)。
+    # 三种写法都要认: scene: (guild) / sceneId: (scene) / scene_id= (通用)
+    "scene": [
+        r"\bscene(?:_?id)?[:=]\s*(\w+)",
+    ],
     # 候选: 跨服调用/会话 token (如 [s=16bd7af3&c=413378]); 唯一性需用 self-report 验证
     "session": [
         r"&?s=([0-9a-fA-F]+)",

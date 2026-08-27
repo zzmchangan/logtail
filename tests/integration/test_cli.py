@@ -90,7 +90,7 @@ class TestOutputContract(CliCase):
         for needle in ("三层读取模型", "8MB", "--date", "--correlate",
                        "--ctx-same", "--focus", "--diagnose", "假阴性",
                        "硬上限", "读取未完成", "字面量", "head",
-                       "case-sensitive"):
+                       "case-sensitive", "anchor", "discover-keys"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -213,6 +213,86 @@ class TestFilteringMatrix(CliCase):
         self.assertNotIn("detail dump", r.stdout)                 # 不敏感: [Debug] 行被滤
         r = self.cli(*base, "--case-sensitive")
         self.assertIn("detail dump", r.stdout)                     # 敏感: DEBUG≠[Debug], 保留
+
+    def test_anchor_pins_window_across_runs(self):
+        """强建议#1: --anchor 钉窗 —— 新日志到来后跨次 --count 仍可比.
+
+        无 anchor: 窗口随最新时间戳滑动, 追加新行后窗口前移 (旧行可能推出、
+        新行算进来); 有 anchor: 窗口钉死 [anchor-since, anchor], 追加的新行
+        不算进来 (双边夹), 跨次运行可比。
+        """
+        import time as _t
+        t0 = _t.time() - 60                                        # 锚点: 1 分钟前 (实时场景)
+        fmt = "%Y-%m-%d %H:%M:%S"
+        log = os.path.join(self.dir, "anchor.log")
+        with open(log, "w") as f:
+            f.write(f"[{_t.strftime(fmt, _t.localtime(t0 - 300))}] early marker\n")
+            f.write(f"[{_t.strftime(fmt, _t.localtime(t0))}] anchor point\n")
+        cfg2 = os.path.join(self.dir, "anchor.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {self.dir}\n"
+                    f'    pattern: "anchor.log"\nblacklist: []\n')
+        base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50"]
+        # 第一次 (since=120s): 窗口 [t0-120, t0] -> anchor point 在内, 早前 marker 在外
+        r1 = self.cli(*base, "--since", "120s", "--match", "marker", "--count")
+        self.assertEqual(int(r1.stdout.strip()), 0)
+        # 追加更新的行 (模拟日志继续写)
+        with open(log, "a") as f:
+            f.write(f"[{_t.strftime(fmt, _t.localtime(t0 + 50))}] early marker later\n")
+        # 无 anchor: 窗口滑到 [latest-120, latest], 新行算进来 -> 1 (漂移)
+        r2 = self.cli(*base, "--since", "120s", "--match", "marker", "--count")
+        self.assertEqual(int(r2.stdout.strip()), 1)
+        # anchor 钉在 t0: 窗口 [t0-120, t0] -> 新行(t0+50)被上界夹掉 -> 仍 0, 与第一次可比
+        r3 = self.cli(*base, "--since", "120s", "--anchor", str(int(t0)),
+                      "--match", "marker", "--count")
+        self.assertEqual(int(r3.stdout.strip()), 0)
+        # anchor 窗口内的行仍正常读到: anchor point 在 [t0-120, t0] 内
+        r4 = self.cli(*base, "--since", "120s", "--anchor", str(int(t0)),
+                      "--match", "point", "--count")
+        self.assertEqual(int(r4.stdout.strip()), 1)
+
+    def test_anchor_requires_since(self):
+        log = os.path.join(self.dir, "anchor2.log")
+        open(log, "w").close()
+        cfg2 = os.path.join(self.dir, "anchor2.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {self.dir}\n"
+                    f'    pattern: "anchor2.log"\n')
+        r = self.cli("--agent", "--config", cfg2, "--anchor", "123")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--since", r.stderr)
+
+    def test_summary_backlog_complete_field(self):
+        """强建议#2: --summary 必须自报读全性 (backlog_complete)."""
+        r = self.A("--summary")
+        d = json.loads(r.stderr.strip().splitlines()[-1])
+        self.assertIn("backlog_complete", d)
+        self.assertTrue(d["backlog_complete"])                     # 正常小夹具必读全
+
+    def test_discover_keys_reports_candidates(self):
+        """强建议#3: --discover-keys 采样自报候选关联键的区分度与跨源分布."""
+        d = self.dir
+        with open(os.path.join(d, "dk.log"), "w") as f:
+            f.write("[2026-08-27 10:00:01] player=100 enter s=const&c=1\n"
+                    "[2026-08-27 10:00:02] roleId: 100 join s=const&c=1\n"
+                    "[2026-08-27 10:00:03] player=200 leave s=const&c=1\n"
+                    "[2026-08-27 10:00:04] nothing here\n")
+        cfg2 = os.path.join(d, "dk.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
+                    f'    pattern: "dk.log"\nblacklist: []\n')
+        r = self.cli("--agent", "--config", cfg2, "--discover-keys",
+                     "--wait", "1", "--since", "24h")
+        self.assertEqual(r.returncode, 0)
+        d = json.loads(r.stdout.strip())
+        self.assertEqual(d["kind"], "logtail.discover_keys")
+        self.assertEqual(d["lines_total"], 4)
+        by_name = {k["key"]: k for k in d["keys"]}
+        # player: 3/4 行有 key, 2 个不同值, 有区分度
+        self.assertEqual(by_name["player"]["lines_with_key"], 3)
+        self.assertEqual(by_name["player"]["distinct_values"], 2)
+        # session(s=): 3/4 行有但值全相同 -> 无区分度
+        self.assertEqual(by_name["session"]["distinct_values"], 1)
 
     def test_exclude(self):
         r = self.A("--match", "player=100", "--exclude", "crash")

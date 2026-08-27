@@ -53,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  管道纪律: | head 超量截断会偏离 exit 0/2 契约(SIGPIPE); 截断用 --lines N, 判 $? 前别接 head。\n"
             "  --correlate key=value 关联键(抽取+归一化跨源对齐; 未定义 key 回退字面子串);\n"
             "  --summary 的 correlate 自报 lines_with_key 用于判断正则是否写歪/key 是否有区分度。\n"
+            "  --discover-keys 采样自报候选关联键的区分度/跨源分布(与 correlate 同视野含黑名单);\n"
+            "  --anchor <epoch> 钉死 since 窗口 [anchor-since, anchor], 跨次 count 可比(需配 --since)。\n"
             "  --date 仅对含 {date} 占位符的源生效(dx 命令无占位符时给 --date 无效, stderr 会警告)。\n"
         ),
     )
@@ -93,6 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--since", default=None,
                    help="只看最近一段时间 (如 5m/1h/30s), 按日志自带时间戳过滤; "
                         "交互与 agent 模式均可用。排查服务器启动报错时回看启动窗口。")
+    p.add_argument("--anchor", type=float, default=None,
+                   help="把 --since 窗口钉死在 [anchor-since, anchor] (epoch 秒), 不随最新日志"
+                        "滑动 —— 跨次 --count 可比 (回归实验)。需与 --since 同用; "
+                        "可用上一次 --summary 的 latest_ts 当 anchor")
+    p.add_argument("--discover-keys", action="store_true",
+                   help="采样窗口自报候选关联键的区分度/跨源分布(JSON), 找出最佳跨服关联键")
     p.add_argument("--count", "--cnt", action="store_true",
                    help="agent dump 模式只输出命中行数, 不打印正文 (快速判断是否爆发)")
     p.add_argument("--lines", "-n", type=int, default=50,
@@ -119,6 +127,10 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(f"logtail: 配置错误: {exc}", file=sys.stderr)
         return 2
+    if args.anchor is not None and not since:
+        print("logtail: --anchor 需与 --since 同用 (它定义的是 since 窗口的钉死锚点)",
+              file=sys.stderr)
+        return 2
     try:
         cfg = load_config(args.config, date=args.date)
         apply_cli(cfg, args.source, args.history, args.context, date=args.date)
@@ -143,6 +155,8 @@ def main(argv=None) -> int:
             return 2
         if args.case_sensitive:
             cfg.case_sensitive = True
+        if args.anchor:
+            cfg.anchor = args.anchor
         cfg.validate()
         # --date 只对含 {date} 占位符的源生效; dx 源若命令里没写 {date}
         # (且 dx CLI 不接受日期参数), 给了 --date 也仍读当天 —— 明示而非静默。
@@ -173,6 +187,11 @@ def main(argv=None) -> int:
             "total_files": total_files,
         }, ensure_ascii=False))
         return 0
+
+    # 关联键发现: 采样窗口自报候选 key 的区分度/跨源分布 (不 tail 正文给 agent)
+    if args.discover_keys:
+        from .agent import discover_keys
+        return discover_keys(cfg, args.lines, args.wait, since=since)
 
     # AI Agent 模式: 不走 curses, 直接输出纯文本
     if args.agent:

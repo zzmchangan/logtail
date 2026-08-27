@@ -100,7 +100,9 @@ def _apply(ln, blk: RuleSet, matchers: List[Rule],
 
 def _provenance(probe: List[dict], summary: bool, out_count: int,
                 latest_ts: Optional[float] = None,
-                correlate_info: Optional[dict] = None) -> None:
+                correlate_info: Optional[dict] = None,
+                backlog_complete: Optional[bool] = None,
+                anchor: Optional[float] = None) -> None:
     """把"发现诊断"写到 stderr, 使"空输出/0命中"能与"源压根没发现"区分开.
 
     这是对"exit 0 + 空输出 = 假阴性"陷阱的解法: 发现失败(0 文件 / dx 失败)时给出
@@ -108,6 +110,8 @@ def _provenance(probe: List[dict], summary: bool, out_count: int,
     - 恒: 所有源都没发现文件, 或某源 dx 失败 -> 打人读警告到 stderr (默认开启, 不污染 stdout)。
     - summary: 额外打一条 JSON 记录到 stderr, 供 agent 程序化 cross-check; 含 latest_ts 锚点。
     - correlate_info: 关联键自报 (lines_total/lines_with_key/matched), 供 agent 判断正则是否写歪。
+    - backlog_complete: 读全性自报 —— False 表示硬上限内历史窗口没读完, count 偏小勿当结论。
+    - anchor: 本次窗口若被钉死, 报出锚点 (跨次可比的凭据)。
     """
     if not probe and not correlate_info:
         return
@@ -133,6 +137,10 @@ def _provenance(probe: List[dict], summary: bool, out_count: int,
             rec["latest_ts"] = latest_ts
         if correlate_info:
             rec["correlate"] = correlate_info
+        if backlog_complete is not None:
+            rec["backlog_complete"] = backlog_complete
+        if anchor is not None:
+            rec["anchor"] = anchor
         print(json.dumps(rec, ensure_ascii=False), file=sys.stderr)
 
 
@@ -187,7 +195,8 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     needs_ctx = context or ctx_same
     if needs_ctx:
         hist += needs_ctx * 2 + 2
-    follower = LogFollower(cfg.sources, history=hist, since=cfg.since)
+    follower = LogFollower(cfg.sources, history=hist, since=cfg.since,
+                           anchor=cfg.anchor)
     follower.start()
 
     seen: List = []
@@ -239,8 +248,14 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
 
     # 时间窗锚点: 以"最新一条日志的时间戳"为参考, 而非 wall-clock (time.time()).
     # 这样实时 tail 与历史 --date 扫描都正确; 锚点也暴露给 summary, 供 agent 自校验。
+    # --anchor 时窗口钉死 [anchor-since, anchor]: 跨次运行可比 (回归实验),
+    # 追加的新行不进来 (双边夹), 不再随最新时间戳滑动。
     latest_ts = max((ln.ts_seconds for ln in seen), default=None)
-    if since and since > 0 and seen and latest_ts is not None:
+    if cfg.anchor > 0 and since and since > 0 and seen:
+        cutoff = cfg.anchor - since
+        seen = [ln for ln in seen
+                if cutoff - 1 <= ln.ts_seconds <= cfg.anchor + 1]
+    elif since and since > 0 and seen and latest_ts is not None:
         cutoff = latest_ts - since
         seen = [ln for ln in seen if ln.ts_seconds >= cutoff - 1]
 
@@ -267,14 +282,16 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         print(n_hit)
         if correlate_info:
             correlate_info["matched"] = n_hit
-        _provenance(probe, summary, n_hit, latest_ts, correlate_info)
+        _provenance(probe, summary, n_hit, latest_ts, correlate_info,
+                    backlog_complete=backlog_done, anchor=cfg.anchor or None)
         return 0
 
     if not matchers and not has_correlate and not excludes:
         out = seen[-lines_n:]           # 无 match/correlate/exclude: 输出最近 lines_n 行
         for ln in out:
             print(_emit(ln, as_json))
-        _provenance(probe, summary, len(out), latest_ts)
+        _provenance(probe, summary, len(out), latest_ts,
+                    backlog_complete=backlog_done, anchor=cfg.anchor or None)
         return 0
 
     hit_idx = [i for i, ln in enumerate(seen) if _hit(ln)]
@@ -312,7 +329,8 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         print(_emit(seen[i], as_json))
     if correlate_info:
         correlate_info["matched"] = len(out_idx)
-    _provenance(probe, summary, len(out_idx), latest_ts, correlate_info)
+    _provenance(probe, summary, len(out_idx), latest_ts, correlate_info,
+                backlog_complete=backlog_done, anchor=cfg.anchor or None)
     return 0
 
 
@@ -334,6 +352,102 @@ def _split_correlate(text: Optional[str]):
         return None, text, None
     key, _, raw = text.partition("=")
     return key.strip(), raw.strip(), normalize(raw)
+
+
+# 候选关联键发现用的内置正则集 (大小写不敏感; 配置 correlation_keys 同名覆盖)。
+# 目的不是猜哪个 id 是"对的", 而是把每个候选的区分度/跨源分布摆出来让使用者挑。
+_DISCOVER_CANDIDATES = [
+    ("player", [r"guid[:=] *(\d+)", r"roleid[:=] *(\d+)", r"player[:=] *(\d+)"]),
+    ("session", [r"[?&\s]s=([0-9a-zA-Z]+)"]),
+    ("uid", [r"\buid[:=] *(\w+)"]),
+    ("request", [r"\brequest_?id[:=] *(\w+)", r"\breqid[:=] *(\w+)"]),
+    ("call", [r"\bcall_?id[:=] *(\w+)"]),
+    ("order", [r"\border_?id[:=] *(\w+)"]),
+    ("scene", [r"\bscene(?:_?id)?[:=] *(\w+)"]),
+    ("instance", [r"\binstance_?id[:=] *(\w+)"]),
+]
+
+
+def discover_keys(cfg: Config, lines_n: int, wait: float = 2.0,
+                  since: Optional[float] = None,
+                  hard_cap: float = DUMP_HARD_CAP) -> int:
+    """采样窗口, 自报各候选关联键的区分度与跨源分布 (stdout 一行 JSON).
+
+    对每个候选 key 抽取+归一化, 报告 {lines_with_key, distinct_values,
+    sources, sample_values}: distinct 少且覆盖满 = 全服常量无区分度;
+    多源出现 + distinct 高 = 好的跨服关联键。数据里有没有好 key 由日志决定,
+    工具负责把它找出来摆好看。
+    """
+    follower = LogFollower(cfg.sources, history=max(lines_n, cfg.history or 0),
+                           since=cfg.since)
+    follower.start()
+    # 与 correlate 同一视野: 应用黑名单/级别过滤 —— 报告的数字就是
+    # --correlate 实际能看到的, 避免"discover 说很好、correlate 全 0"的错位。
+    blk = _build_blk(cfg)
+    seen: List = []
+    hard_deadline = time.monotonic() + hard_cap
+    live_deadline = None
+    try:
+        while True:
+            now = time.monotonic()
+            if now >= hard_deadline:
+                break
+            if live_deadline is not None and now >= live_deadline:
+                break
+            batch = follower.queue.drain()
+            for ln in batch:
+                if not blk.blocked(ln.text) and blk.level_ok(ln.level):
+                    seen.append(ln)
+            if follower.backlog_ready():
+                if live_deadline is None:
+                    live_deadline = time.monotonic() + wait
+            else:
+                live_deadline = None
+            time.sleep(0.05)
+    finally:
+        probe = follower.probe()
+        follower.stop()
+
+    seen.sort(key=lambda l: (l.ts_key, l.seq))
+    if since and since > 0 and seen:
+        latest = max(l.ts_seconds for l in seen)
+        seen = [l for l in seen if l.ts_seconds >= latest - since - 1]
+
+    cands = dict(_DISCOVER_CANDIDATES)
+    for k in cfg.correlation_keys:
+        name = str(k.get("name", "")).strip()
+        if name:
+            cands[name] = list(k.get("extract") or [])
+
+    keys_out = []
+    for name, patterns in cands.items():
+        ck = CorrelationKeys([{"name": name, "extract": patterns}],
+                             presets=False, case_sensitive=cfg.case_sensitive)
+        values: dict = {}
+        sources = set()
+        n = 0
+        for ln in seen:
+            v = ck.extract1(ln.text, name)
+            if v is None:
+                continue
+            n += 1
+            values[v] = values.get(v, 0) + 1
+            sources.add(ln.source)
+        keys_out.append({
+            "key": name,
+            "lines_with_key": n,
+            "distinct_values": len(values),
+            "sources": sorted(sources),
+            "sample_values": list(values)[:3],
+        })
+
+    print(json.dumps({
+        "kind": "logtail.discover_keys",
+        "lines_total": len(seen),
+        "keys": keys_out,
+    }, ensure_ascii=False))
+    _provenance(probe, False, len(seen), None)
+    return 0
 
 
 def monitor(cfg: Config, match: Optional[str], lines_n: int,

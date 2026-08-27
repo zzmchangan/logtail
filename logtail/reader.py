@@ -296,7 +296,8 @@ class _SourceWorker(threading.Thread):
         secs = self._owner.since
         if secs <= 0 or size == 0:
             return 0
-        cutoff = time.time() - secs
+        # 锚点: 默认 wall-clock; 给了 --anchor 则钉死 (跨次运行窗口可比)
+        cutoff = (self._owner.anchor or time.time()) - secs
 
         try:
             with open(path, "rb") as fh:
@@ -380,10 +381,11 @@ class LogFollower:
     """管理全部后台读取线程, 暴露 reset() 供 /reset 使用."""
 
     def __init__(self, sources: List[SourceConfig], history: int = 0,
-                 since: float = 0.0) -> None:
+                 since: float = 0.0, anchor: float = 0.0) -> None:
         self.sources = sources
         self.history = history               # >0 表示启动时回溯末 N 行
         self.since = since                   # >0 表示按时间戳回看最近 N 秒
+        self.anchor = anchor                 # >0: since 窗口钉死 [anchor-since, anchor]
         self.queue = _UnboundedQueue()
         self._seq = itertools.count(1)
         self._lock = threading.Lock()

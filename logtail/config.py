@@ -36,6 +36,7 @@ class Config:
     level: str = ""                            # >= 该级别过滤, 如 "ERROR"; 空=不过滤
     trace: str = ""                            # 实体追踪词; 空=不追踪
     case_sensitive: bool = False               # True: 本次运行所有文本匹配区分大小写
+    anchor: float = 0.0                        # >0: --since 窗口钉死在 [anchor-since, anchor]
 
     def validate(self) -> None:
         """校验源目录存在、pattern 合法, 给出明确错误."""

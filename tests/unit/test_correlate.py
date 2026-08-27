@@ -53,6 +53,15 @@ class TestPresets(unittest.TestCase):
         ck = CorrelationKeys()
         self.assertEqual(ck.extract1("s=16bd7af3&c=1", "session"), "16bd7af3")
 
+    def test_scene_preset_covers_three_spellings(self):
+        """scene 预设要认三种写法: scene: (guild) / sceneId: (scene) / scene_id=."""
+        ck = CorrelationKeys()
+        self.assertEqual(ck.extract1("[Info] scene:273224638266229618 x", "scene"),
+                         "273224638266229618")
+        self.assertEqual(ck.extract1("sceneId:123 abc", "scene"), "123")
+        self.assertEqual(ck.extract1("scene_id=45", "scene"), "45")
+        self.assertIsNone(ck.extract1("no scene here", "scene"))
+
     def test_config_overrides_preset(self):
         ck = CorrelationKeys([{"name": "player", "extract": [r"uid=(\d+)"]}])
         self.assertEqual(ck.extract1("uid=9", "player"), "9")

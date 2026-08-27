@@ -105,7 +105,9 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 - `--focus <源名>`: **单源聚焦**——只输出指定来源的行(按配置里的源名筛, dx/glob 源均有效), 与 `--ctx-same` 互补看单进程。**精确匹配、大小写敏感**; 未知/typo 源名 fail-fast exit 2 并列出可用源名(防静默 0 行假阴性)。
 - **管道纪律**: `--agent ... | head -N` 当输出量超过 head 消费量时, python 被 SIGPIPE 杀, **观察到的 exit 码会偏离 0/2 契约**(如 120/141)。要截断用工具自身的 `--lines N`; 判定成败靠工具本身的退出码 + `--summary`, 别在有 `| head` 的管道里看 `$?`。
 - **`--since` 仅支持单单位**: `30s/5m/1h/90m` 可; 复合(`1h30m`)、小数(`1.5h`)、裸数字(`90`)会被 exit 2 拒绝(错误信息会明示)。
-- `--correlate <key>=<value>`: **关联键**——跨进程按共享标识对齐: 用 `correlation_keys` 配置(或内置预设 `player`/`session`)的正则从每行**抽取** id、**归一化**(去空白/前导零)后比对, 只留匹配行, 全局时间排序。解决"同一 id 在不同进程打印成 `player=123`/`RoleId:123`/`guid:123` 串不起来"的问题。未定义 key 回退字面子串(同 `--trace`)。
+- `--correlate <key>=<value>`: **关联键**——跨进程按共享标识对齐: 用 `correlation_keys` 配置(或内置预设 `player`/`scene`/`session`)的正则从每行**抽取** id、**归一化**(去空白/前导零)后比对, 只留匹配行, 全局时间排序。解决"同一 id 在不同进程打印成 `player=123`/`RoleId:123`/`guid:123` 串不起来"的问题。未定义 key 回退字面子串(同 `--trace`)。
+- `--discover-keys`: **关联键发现**——采样窗口, 对一批候选 key(player/scene/session/uid/request/call/order/instance + 配置里的)跑抽取, stdout 输出 JSON: 每个 key 的 `lines_with_key`/`distinct_values`/`sources`/`sample_values`。**与 correlate 同视野(含黑名单/级别过滤)**——报的数字就是 `--correlate` 实际能看到的。挑选标准: 多源出现 + distinct 高 = 好的跨服关联键; 覆盖满但 distinct=1 = 全服常量无区分度。实战发现: 本集群 scene 实例 id 主要在 `[Debug]` 行上, 主配置(含 DEBUG 黑名单)下只能看到 4 行——要跨服追 scene 链路需用无 DEBUG 黑名单的配置。
+- `--anchor <epoch>`: **钉死窗口**——把 `--since` 窗口定在 `[anchor-since, anchor]`, 不随最新日志滑动(需与 `--since` 同用, 否则 exit 2)。**跨次 `--count` 可比**: 回归实验"改前 vs 改后"用同一个 anchor 两次对比; 锚点取上一次 `--summary` 的 `latest_ts`。追加的新行被上界夹掉, 早前行不滑出。
 
 配置 `correlation_keys`(每个 key 一组正则, 第一个命中即取):
 ```yaml
@@ -144,7 +146,7 @@ correlation_keys:
 - **`--wait` (默认 2s)**: **实时跟随时长**, 不是总时长。dump 分两阶段: 先**信号驱动**等各源把历史窗口(`--since`/`--history` 定位的起点→文件尾)全部读完(不受 `--wait` 限制,只受 30s 硬上限约束), backlog 完成后再跟随 `--wait` 秒收新行(或约 1s 无新行提前返回)。硬上限内 backlog 没读完会 stderr 打 `warning: 历史窗口读取未完成`——**看到这条就别把空结果当结论**。
 - **`--lines` vs `--history`**: agent 收集量 = `max(lines, history)`, 输出取最后 `lines` 条。
 - **`--since` (dump)**: 以**窗口内最新一条日志**的时间戳为参考 (`最新 - since`), 而非 wall-clock —— 所以配合历史 `--date` 扫描也不会被清空。
-- **`--summary`**: 把"发现诊断"(JSON)打到 **stderr**。**空结果/`--count 0` 时先看 stderr**: 有 `warning:` 或 JSON 里 `total_files==0` / 某源 `discovered:false` / `dx_error` 非空 → 是"**源没被发现**", 不是"没错误" (避免 'exit 0 + 空输出' 假阴性); 都正常 `files>0` 才可信。stdout 仍只放日志/计数。
+- **`--summary`**: 把"发现诊断"(JSON)打到 **stderr**。**空结果/`--count 0` 时先看 stderr**: 有 `warning:` 或 JSON 里 `total_files==0` / 某源 `discovered:false` / `dx_error` 非空 → 是"**源没被发现**", 不是"没错误" (避免 'exit 0 + 空输出' 假阴性); 都正常 `files>0` 才可信。stdout 仍只放日志/计数。**`backlog_complete: false`** 表示硬上限内历史窗口没读完——count 偏小勿当结论。给了 `--anchor` 时 summary 也会报出 `anchor` 字段(跨次可比的凭据)。
 - **`--json` 契约**: 每行一个 JSON 对象 `{"ts","ts_seconds","source","level","text","seq"}`。`ts` 供人读/对齐窗口, `ts_seconds` 为 epoch 秒供排序比较, `seq` 供确定性重放; `--count`/`--summary` 不受影响(仍只在各自位置)。
 - **`--summary` 锚点**: JSON 里含 `latest_ts`——`--since` 实际锚定的"最新一条日志时间戳"。agent 据它自校验"这个窗口对齐的是哪个时间", 尤其注意 GM 调时间(multiTimeOffset)会让日志时间≠墙钟, 别用墙钟去对。
 - **`--diagnose`**: 独立健康检查(不 tail), JSON 到 stdout。**拿到空结果先跑它**: 若某源 `discovered:false`/`dx_error` 非空 → 源没被找到, 别下"无错误"结论。判"源活着"看 `files>0 且 discovered=true`; `latest_ts` 在活跃写入的文件上可能**瞬态为 null**(尾部块恰好无完整时间戳行), 重跑即恢复, 别单依赖它。
