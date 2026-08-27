@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  --since(dump) 以窗口内最新日志时间戳为参考; '-C 5s' 时间窗仅交互版可用 (agent 的 -C 只接受行数)。\n"
             "  --wait(dump) 自收到首条有效行后约 1s 无新行才提前返回(初始化期不提前, 会等到 --wait)。\n"
             "  --ctx-same N 仅 agent+match(同进程上下文, 与 -C 全局互补); --diagnose 独立健康检查(不 tail)。\n"
+            "  --focus <源名> 单源聚焦(按配置源名筛, dx/glob 均有效, 与 --ctx-same 互补)。\n"
         ),
     )
     p.add_argument("--config", "-c", default=None,
@@ -65,6 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="排除命中该词的日志 (逗号/空格分隔多词; 与 --match 叠加)")
     p.add_argument("--trace", default=None,
                    help="实体追踪: 只显示所有源中含该词的干净命中行 (无邻居行); 交互 /trace 与 agent 均可用")
+    p.add_argument("--focus", default=None,
+                   help="单源聚焦: 只输出指定来源 (name) 的行, 如 --focus scene; dx/glob 源均有效")
     p.add_argument("--since", default=None,
                    help="只看最近一段时间 (如 5m/1h/30s), 按日志自带时间戳过滤; "
                         "交互与 agent 模式均可用。排查服务器启动报错时回看启动窗口。")
@@ -129,7 +132,7 @@ def main(argv=None) -> int:
             if args.agent_mode == "monitor":
                 return monitor(cfg, args.match, args.lines,
                                exclude=args.exclude, summary=args.summary,
-                               as_json=args.as_json)
+                               as_json=args.as_json, focus=args.focus)
             # dump: --context/-C 可当作命中行的上下文窗口 (结合 --match 用)
             # --trace 作为 match 但零上下文 (纯命中行, 无邻居)
             match = args.trace if args.trace else args.match
@@ -138,7 +141,7 @@ def main(argv=None) -> int:
                         context=ctx, since=since,
                         count_only=args.count, exclude=args.exclude,
                         summary=args.summary, ctx_same=args.ctx_same,
-                        as_json=args.as_json)
+                        as_json=args.as_json, focus=args.focus)
         except RulePatternError as exc:
             print(f"logtail: --match 规则错误: {exc}", file=sys.stderr)
             return 2

@@ -83,6 +83,9 @@ python -m logtail --agent --config config.yaml --match ERROR --json --lines 20
 # 健康检查: 只探测源是否被发现, 不 tail 不读正文 (agent 先验证再信 "0 命中")
 python -m logtail --diagnose --config config.yaml
 
+# 单源聚焦: 只看 scene 这个进程的行 (按配置里的源名筛, dx/glob 源均有效)
+python -m logtail --agent --config config.yaml --focus scene --since 5m
+
 # 持续监控: 把过滤后的日志持续打 stdout (Ctrl+C 停止)
 python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 ```
@@ -94,6 +97,7 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 - `--ctx-same N`: **同源上下文**——命中行连同"同进程"前后各 N 行 (跳过其它进程)。与 `-C`(全局时间邻居)互补: `-C` 看系统面, `--ctx-same` 看单进程因果。
 - `--json`: 每行输出一个 JSON 对象 (`ts`/`ts_seconds`/`source`/`level`/`text`/`seq`), 供编程级加工; 仍走同一套过滤管线。
 - `--diagnose`: **只做发现健康检查**(不 tail 不读正文), 输出 JSON: 每源 `files`/`discovered`/`dx_error`/`latest_ts`。
+- `--focus <源名>`: **单源聚焦**——只输出指定来源的行(按配置里的源名筛, dx/glob 源均有效), 与 `--ctx-same` 互补看单进程。
 - `--count`: 只输出命中行数 (经 黑名单/级别/match/exclude 过滤后), 快速判断这段时是否爆发。
 - 黑名单**始终生效**; 不带 `--match`/`-C` 时输出黑名单过滤后的全部最近 N 行。
 - Agent 修 bug 的用法: 先 `--match` 收窄到错误行 → `-C` 补上下文 → `--since` 限时间段 → `re:` 正则再收窄 → 拿到极少量却完整的线索。

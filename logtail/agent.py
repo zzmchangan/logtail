@@ -77,11 +77,13 @@ def _build_blk(cfg: Config) -> RuleSet:
 
 
 def _apply(ln, blk: RuleSet, matchers: List[Rule],
-           excludes: List[Rule] = None) -> bool:
-    """返回该行是否应输出 (黑名单+级别剔除后, matchers 任一命中, 且不命中 excludes)."""
+           excludes: List[Rule] = None, focus: Optional[str] = None) -> bool:
+    """返回该行是否应输出 (黑名单+级别剔除后, matchers 任一命中, 不命中 excludes, 且匹配 focus)."""
     if blk.blocked(ln.text):
         return False
     if not blk.level_ok(ln.level):
+        return False
+    if focus and ln.source != focus:
         return False
     if matchers and not any(r.matches(ln.text) for r in matchers):
         return False
@@ -128,11 +130,13 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
          wait: float = 2.0, context: int = 0,
          since: Optional[float] = None, count_only: bool = False,
          exclude: Optional[str] = None, summary: bool = False,
-         ctx_same: int = 0, as_json: bool = False) -> int:
+         ctx_same: int = 0, as_json: bool = False,
+         focus: Optional[str] = None) -> int:
     """收集最近若干行(经黑名单/可选 match/时间窗), 打印后退出.
 
     context   > 0: 每条命中行连同**全局时间序**前后各 context 行一起输出。
     ctx_same  > 0: 每条命中行连同**同进程**前后各 ctx_same 行一起输出 (跳过其它进程的行)。
+    focus     > 0: 只收集指定来源 (name) 的行 --- 单源聚焦, 对 dx/glob 源均有效。
     since     > 0: 只看日志时间戳在 [最新日志-至今, 最新日志] 内的行 (秒)。
     count_only    : 只输出命中行数, 不打印正文 (快速判断是否爆发)。
     as_json       : 每行输出一个 JSON 对象 (NDJSON), 而非定宽文本。
@@ -159,8 +163,9 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
             if batch:
                 saw_batch = True
             for ln in batch:
-                # 黑名单 + 级别剔除 (match 在最后输出时再判, 这里先收集)
-                if not blk.blocked(ln.text) and blk.level_ok(ln.level):
+                # 黑名单 + 级别剔除 + (可选)单源聚焦 (match 在最后输出时再判, 这里先收集)
+                if (not blk.blocked(ln.text) and blk.level_ok(ln.level)
+                        and (not focus or ln.source == focus)):
                     seen.append(ln)
             if seen:
                 idle = 0
@@ -187,7 +192,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     # 选出命中行 (或全部重新过滤) 并决定输出
     if count_only:
         # count 不管有无 match: 统计通过 黑名单+级别+match/exclude 的行数
-        n_hit = sum(1 for ln in seen if _apply(ln, blk, matchers, excludes))
+        n_hit = sum(1 for ln in seen if _apply(ln, blk, matchers, excludes, focus))
         print(n_hit)
         _provenance(probe, summary, n_hit, latest_ts)
         return 0
@@ -200,7 +205,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         return 0
     else:
         hit_idx = [i for i, ln in enumerate(seen)
-                   if _apply(ln, blk, matchers, excludes)]
+                   if _apply(ln, blk, matchers, excludes, focus)]
         out_idx: List[int] = []
         if ctx_same:
             # 同源上下文: 命中行所在进程的前后各 ctx_same 行 (其它进程的行不参与,
@@ -246,7 +251,7 @@ def _split_terms(text: Optional[str]) -> List[str]:
 
 def monitor(cfg: Config, match: Optional[str], lines_n: int,
             exclude: Optional[str] = None, summary: bool = False,
-            as_json: bool = False) -> int:
+            as_json: bool = False, focus: Optional[str] = None) -> int:
     """持续把过滤后的日志打到 stdout, 直到 Ctrl+C."""
     matchers = _build_match_rules(_split_terms(match))
     excludes = _build_exclude_rules(_split_terms(exclude))
@@ -260,7 +265,7 @@ def monitor(cfg: Config, match: Optional[str], lines_n: int,
         while True:
             batch = follower.queue.drain()
             for ln in batch:
-                if _apply(ln, blk, matchers, excludes):
+                if _apply(ln, blk, matchers, excludes, focus):
                     print(_emit(ln, as_json))
                     sys.stdout.flush()
             graces += 1
