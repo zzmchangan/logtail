@@ -1,0 +1,29 @@
+# logtail 示例配置
+# 日志源: 每个源用 name 作为输出前缀, path 为目录, pattern 为 glob 匹配模式。
+#   - path/pattern 支持 {date}(YYYY-MM-DD) / {YYYY} / {MM} / {DD} 占位符,
+#     启动时自动用当天日期填充, 无需手工改 (用 --date 可看历史某天)。
+#   - 可选 dx: 配置后不再 glob, 而是运行 "dx <cmd>" 拿返回的具体文件路径
+#     (每行一个), 配合日期分文件 / 服务自动发现最省事。
+log_sources:
+  - name: gateway
+    path: /data/logs/gateway/
+    pattern: "*.log"
+  - name: scene
+    dx: "dx log SceneServer 131189"      # 自动发现路径, 无需写死
+  - name: dungeon
+    path: /data/logs/{date}/
+    pattern: "SceneServer-*_{date}_*.log"   # 日期占位符自动填充
+
+# 黑名单: 命中则丢弃该日志行(采集阶段应用)。
+# 裸词 = 大小写不敏感子串匹配; "re:" 前缀 = 正则表达式(同样大小写不敏感)。
+blacklist:
+  - "heartbeat"
+  - "keepalive"
+  - "timer_tick"
+  - "DEBUG"
+
+# 初始高亮词: 启动时作为关键词列表加载(运行时可用 /keyword 动态增删)。
+# 仅当运行中输入 /save 才会把当前高亮词与黑名单写回本文件。
+keywords:
+  - "item_id"
+  - "timeout"

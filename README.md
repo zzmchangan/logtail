@@ -1,0 +1,175 @@
+# logtail — 多文件实时日志聚合查看工具
+
+在单个终端视图里实时聚合跟踪多个日志文件, 提供接近单进程调试的多进程日志观察体验。
+支持黑名单过滤、交互式关键词高亮(多色)、上下文聚焦(前后 N 行)、暂停/恢复、历史回溯、
+配置持久化(`/save`) 与重开(`/reset`)。
+
+## 运行环境
+- 纯本地运行, 日志在本机磁盘上, 不涉及远程。
+- 支持 Linux / macOS。
+- Python 3.9+, 依赖 PyYAML (`pip install -r requirements.txt` 或 `pip install pyyaml`)。
+
+## 快速开始
+```bash
+# 1. 复制示例配置并修改日志源
+cp config.example.yaml config.yaml
+vim config.yaml
+
+# 2. 运行
+python -m logtail --config config.yaml
+
+# 带历史回溯 + 上下文窗口
+python -m logtail --config config.yaml --history 50 -C 5
+```
+
+## 配置文件
+```yaml
+log_sources:
+  - name: gateway                 # 输出前缀, 标识来源
+    path: /data/logs/gateway/
+    pattern: "*.log"
+  - name: scene
+    dx: "dx log SceneServer 131189"    # 可选: 自动发现路径, 优先于 glob
+  - name: dungeon
+    path: /data/logs/{date}/           # 日期占位符
+    pattern: "SceneServer-*_{date}_*.log"
+
+blacklist:                    # 命中则丢弃 (大小写不敏感子串匹即或 re: 正则)
+  - "heartbeat"
+  - "DEBUG"
+
+keywords:                     # 初始高亮词 (大小写不敏感; re: 前缀=正则)
+  - "item_id"
+  - "timeout"
+```
+
+**路径发现**:
+- **日期占位符**: `path` / `pattern` 中的 `{date}`(`YYYY-MM-DD`)、`{YYYY}`、`{MM}`、`{DD}`
+  启动时自动用当天日期填充。看历史某天用 `--date 2026-08-26`。
+- **`dx` 自动发现**: 配了 `dx` 后不再 glob, 而是运行 `dx <cmd>` 拿返回的具体文件路径
+  (每行一个), 配合按日期/服务拆分的日志最省事, 无需每次手工改。
+
+## AI Agent 模式 (非交互)
+给 AI 修 bug 用——核心价值是**聚合日志 + 过滤日志**:把分散在不同进程/目录的文件聚合成一条时间有序的流,再过滤到少量行,AI 就能在**一个聚焦视图**里快速定位 bug。
+```bash
+# 一次性: 收集最近 50 行 (经黑名单, 只留含 ERROR 的), 打印后退出
+python -m logtail --agent --config config.yaml --lines 50 --match ERROR
+
+# 命中 ERROR 的每条行, 连带其前后各 2 行一起输出 (AI 看因果)
+python -m logtail --agent --config config.yaml --match ERROR -C 2
+
+# 只保留正则命中的最近 8 行
+python -m logtail --agent --config config.yaml --lines 8 --match 're:player=\d+'
+
+# 只看最近 5 分钟 (按日志自带时间戳过滤, 支持 30s/5m/1h) —— 交互与 agent 均可用
+python -m logtail --config config.yaml --since 5m
+python -m logtail --agent --config config.yaml --match ERROR --since 5m
+
+# 只保留 >= ERROR 级别 + 只输出命中行数 (快速判断是否爆发)
+python -m logtail --agent --config config.yaml --level ERROR --count --since 5m
+
+# 实体追踪: 跨源只显示含 player=123 的纯净命中行 (无邻居)
+python -m logtail --agent --config config.yaml --trace player=123
+
+# 多词(OR) + 排除: 命中 timeout 或 crash, 且排除 heartbeat
+python -m logtail --agent --config config.yaml --match 'timeout crash' --exclude heartbeat
+
+# 持续监控: 把过滤后的日志持续打 stdout (Ctrl+C 停止)
+python -m logtail --agent --mode monitor --config config.yaml --match ERROR
+```
+- 前缀与交互版一致 (`[时间戳] 来源 正文`); Agent 能看出日志来自哪个进程。
+- `--match` 复用关键词写法: 裸词=子串, `re:`=正则, 大小写不敏感; 逗号/空格分隔多词 = OR。`--exclude` 命中即剔除。
+- `-C N` 结合 `--match`: 每条命中行连带**前后各 N 行**; 也可 `-C 5s` 按**时间**窗展开。
+- `--since 5m`: 只看最近一段时间(按日志自带时间戳), 跳过早期杂音; 以最新日志为参考, 历史日 `--date` 也能用。
+- `--level ERROR`: 只保留 >= 该级别的行; `--trace <词>`: 跨源纯净命中行(无邻居)。
+- `--count`: 只输出命中行数, 快速判断这段时是否爆发。
+- 黑名单**始终生效**; 不带 `--match`/`-C` 时输出黑名单过滤后的全部最近 N 行。
+- Agent 修 bug 的用法: 先 `--match` 收窄到错误行 → `-C` 补上下文 → `--since` 限时间段 → `re:` 正则再收窄 → 拿到极少量却完整的线索。
+
+## 交互命令
+| 命令 | 缩写 | 作用 |
+|---|---|---|
+| `/keyword <词> [<词>...]` | `/k` | 添加高亮词 (可一次多个; `re:` 前缀=正则) |
+| `/clear` | `/clr` | 清除所有高亮词 |
+| `/remove <词> [<词>...]` | `/rm` | 移除指定高亮词 (可一次多个) |
+| `-C N` | `/context N`、`/ctx N` | 切换上下文模式; N 为行数, 也支持 `-C 5s`/`-C 1m` 按时间 |
+| `/all` | `--all` | 切回全量显示模式 |
+| `/level ERROR` | —— | 只保留 >= 该级别的行 (可用 `all` 取消) |
+| `/trace <词>` | —— | 只显示所有源中含该词的纯净行 (无邻居; `off`/`all` 取消) |
+| `/pause` / `/resume` | —— | 暂停/恢复输出 (恢复时补回错过的行) |
+| `/blacklist <规则> [<规则>...]` | `/bl` | 临时添加黑名单 (可一次多个) |
+| `/unblacklist <规则> [<规则>...]` | `/ubl` | 移除黑名单 (可一次多个) |
+| `/list` | —— | 显示当前高亮词、黑名单、级别、模式 |
+| `/save` | —— | **把当前高亮词 & 黑名单写回配置文件** (仅此命令落盘; 保留注释与其余字段) |
+| `/reset` | —— | **重读配置文件**后重置规则+清空缓冲+重新跟踪 (中途 `/save` 过也能正确回退) |
+| `/help` | `/?` | 内联帮助 |
+| `/quit` | Ctrl+C | 退出 |
+
+> **搜索**: `/关键词` 在缓冲区内搜索并跳到第一条命中, `n`/`N` 跳下一条/上一条 (支持 `re:` 正则)。搜索跳转只是"到达", 不是过滤。
+> **一次加多个**: `/k timeout player ERROR` 就同时加 3 个高亮词;`/clr`、`/rm a b`、`/bl x y`、`/ctx 5` 同理。
+
+> **持久化语义**: 运行时的 `/keyword`、`/blacklist` 等增删**不自动保存**;
+> 只有 `/save` 才把当前高亮词与黑名单写回配置。`/save` 采用**文本级替换**,只改 `blacklist:`/`keywords:` 两个键下的列表项,`log_sources`、注释、其他格式**全部原样保留**。
+> `/reset` 会**重新读取配置文件**(而非用启动时的内存值),所以中途 `/save` 过也能正确回退到文件里的最新状态。
+
+> **匹配规则**: 裸词 = 大小写不敏感子串匹配; `re:` 前缀 = 正则表达式 (同样大小写不敏感)。
+> **黑名单同样支持 `re:`** 正则 (如 `/bl re:player=\d+`、配置里 `blacklist: [re:heartbeat.*err]`)。
+> **级别自动着色**: ERROR/FATAL 红、WARN 黄、INFO 青、DEBUG/TRACE 蓝 (无需手动加高亮词)。
+
+## Debug 工作流建议
+- **排查服务器启动报错**: 服务器已经跑起来了、日志文件很大, 别再从头翻。直接回看启动窗口:
+  ```bash
+  python -m logtail --config config.yaml --since 5m
+  ```
+  启动后日志按时间戳窗口展示"最近 5 分钟", 一眼看到启动瞬间报的错。窗口内用 `↑` 回放。
+- **只看错误行**: 启动后按 `-C 5` 切上下文, 或先配置 `keywords: [ERROR, Fail]` 让错误行着色突出。
+- **黑名单去噪**: 把 heartbeat/timer_tick/keepalive 这类刷屏词加进 `blacklist`, 只剩有效日志。
+- **给 AI 定位**: 用 `--agent` 让 AI 拿过滤后少量日志 (见上文), 配合 `--match ERROR -C 2 --since 10m` 拿到"错误+上下文+时间段"的完整线索。
+- **多进程链路**: `dx` 配置把多个进程聚合成一条时间有序流, 跨进程因果一目了然。
+
+## 滚动与定位
+- **自动跟随底部 (默认)**: 新日志实时滚动。一旦你**向上滚**,视口即**冻结**,新日志追加不再把窗口拽回底部——方便向上翻看历史不被刷屏打断。
+- **键位**:
+  - `↑`/`↓` 逐行
+  - `PgUp`/`PgDn` 翻页
+  - `Home` 跳到最顶
+  - `End` 或 **`G`** 跳回最底并恢复自动跟随
+  - **`g`** 跳到最顶(输入框为空时)
+  - **`Enter`(回车)** 执行命令并**自动跳到最新、解除冻结**
+  - **鼠标滚轮**: 上滚回看历史,下滚前进;滚到底自动解除冻结
+- 状态栏出现 `FREEZE` 表示已冻结;滚到底 (或按 `End`/`G`) 后消失、恢复跟随。
+
+## 显示模式
+- **全量模式 (默认)**: 显示所有通过黑名单的行, 高亮词着色突出。
+- **上下文模式** (`-C N`): 只显示含高亮词的行, 连同其前后各 N 行; 窗口外的行显示但不高亮 (弱化)。
+
+## 示例: 排查 bug 的典型流程
+1. 启动工具, 日志实时滚动。
+2. 操作游戏, 观察终端日志。
+3. 发现可疑: 输入 `/k timeout` 加高亮。
+4. 日志量仍大: 输入 `-C 5` 只看高亮词上下文。
+5. 定位到具体错误行, 找到更精确关键词, 加新的高亮词, 调整窗口。
+6. 输入 `/all` 回全量, 完整追踪链路。
+
+## 开发 & 测试
+```bash
+# 生成日志夹具 (真实文件, 供运行时产生流)
+bash tests/make_fixtures.sh /tmp/lt_logs
+
+# 模块级冒烟测试 (无需终端)
+PYTHONPATH=. python3 tests/smoke_test.py
+```
+
+在真实终端里跑一次看交互效果:
+```bash
+python -m logtail -s gateway:/tmp/lt_logs/gateway:*.log \
+                  -s logic:/tmp/lt_logs/logic:*.log \
+                  -s scene:/tmp/lt_logs/scene:scene_*.log
+```
+边运行时由另一终端向这些文件追加行/做轮转, 观察聚合与命令效果。
+
+## 性能与约束
+- 每个日志源一个后台线程轮询 (200ms), 主线程每 120ms 排空排序。
+- 时序采用"本批内稳定排序", 延迟 < 200ms, 近似全局有序 (不追求严格全局排序)。
+- 内存由滚动缓冲上限封顶, 不随运行时间无限增长。
+- 黑名单在采集阶段应用, 高亮在显示阶段应用, 高亮不过滤日志。

@@ -1,0 +1,31 @@
+# logtail 正式配置 —— RO3 服务器日志聚合(集群 131189)
+#
+# 三个服务通过 dx 工具自动发现日志文件路径, 无需手工维护具体文件名。
+# 日志按天分文件, 由 dx 每次解析出当天最新路径; 工具轮询时会重新跑 dx,
+# 跨天/轮转后自动跟到新文件。
+
+log_sources:
+  - name: SceneServer            # SceneServer 多实例 (dungeon-0 / main-0), 输出前缀统一为 scene
+    dx: "dx log SceneServer 131189"
+
+  - name: GuildServer            # GuildServer 单实例
+    dx: "dx log GuildServer 131189"
+
+  - name: MatchServer            # MatchServer 单实例
+    dx: "dx log MatchServer 131189"
+
+# 黑名单: 命中则丢弃该日志行(采集阶段应用)。
+# 裸词 = 大小写不敏感子串匹配; "re:" 前缀 = 正则表达式(同样大小写不敏感)。
+blacklist:
+  - "heartbeat"
+  - "keepalive"
+  - "timer_tick"
+  - "DEBUG"
+  - "InspectUtils"
+
+# 初始高亮词: 启动时作为关键词列表加载(运行时可用 /keyword 动态增删)。
+# 仅当运行中输入 /save 才会把当前高亮词与黑名单写回本文件。
+keywords:
+  - "ERROR"
+  - "timeout"
+  - "Assert"
