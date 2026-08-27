@@ -30,30 +30,45 @@ from .timeline import RingBuffer
 DUMP_HARD_CAP = 30.0
 
 
-def format_line(ln) -> str:
-    """把一条 LogLine 格式化为带前缀的单行 (与交互版一致, 无颜色转义)."""
+def format_line(ln, text: str = None) -> str:
+    """把一条 LogLine 格式化为带前缀的单行 (与交互版一致, 无颜色转义).
+
+    text 可传截断后的正文 (见 _truncate)。
+    """
     ts = ln.time_str or fmt_hhmmss(ln.ts_seconds)
-    return f"{ts} {ln.source:<12} {ln.text}"
+    return f"{ts} {ln.source:<12} {text if text is not None else ln.text}"
 
 
-def _json_line(ln) -> str:
+def _json_line(ln, text: str = None) -> str:
     """把一条 LogLine 序列化成单个 JSON 对象 (NDJSON), 供 agent 编程级加工.
 
     含 ts/ts_seconds(epoch)/source/level/text/seq, 便于按字段聚合与确定性重放。
+    text 可传截断后的正文 (见 _truncate)。
     """
     return json.dumps({
         "ts": ln.time_str or fmt_hhmmss(ln.ts_seconds),
         "ts_seconds": ln.ts_seconds,
         "source": ln.source,
         "level": ln.level,
-        "text": ln.text,
+        "text": text if text is not None else ln.text,
         "seq": ln.seq,
     }, ensure_ascii=False)
 
 
-def _emit(ln, as_json: bool) -> str:
-    """按 as_json 选择输出格式: 定宽文本 (默认) 或单行 JSON."""
-    return _json_line(ln) if as_json else format_line(ln)
+def _truncate(text: str, max_len: int) -> str:
+    """超长行截断 (大 JSON/proto dump 一条几十 KB, 吃掉输出配额)。
+
+    截断处显式标记原始长度, agent 知道"这行没看全"而不是默默丢内容。
+    """
+    if max_len <= 0 or len(text) <= max_len:
+        return text
+    return text[:max_len] + f" ...[logtail: 行过长已截断, 原文 {len(text)} 字符]"
+
+
+def _emit(ln, as_json: bool, max_len: int = 0) -> str:
+    """按 as_json 选择输出格式: 定宽文本 (默认) 或单行 JSON; 超长行先截断."""
+    text = _truncate(ln.text, max_len)
+    return _json_line(ln, text) if as_json else format_line(ln, text)
 
 
 def _build_match_rules(patterns: List[str], cfg: Config) -> List[Rule]:
@@ -312,7 +327,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
                   f"{'前' if keep == 'head' else '后'} {len(out)} 条 "
                   f"(调大 --lines 或 --keep head|tail 切换保留端)", file=sys.stderr)
         for ln in out:
-            print(_emit(ln, as_json))
+            print(_emit(ln, as_json, cfg.max_line_len))
         _provenance(probe, summary, len(out), latest_ts,
                     backlog_complete=backlog_done, anchor=cfg.anchor or None)
         return 0
@@ -355,7 +370,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
               f"(调大 --lines 或 --keep head|tail 切换保留端)", file=sys.stderr)
 
     for i in out_idx:
-        print(_emit(seen[i], as_json))
+        print(_emit(seen[i], as_json, cfg.max_line_len))
     if correlate_info:
         correlate_info["matched"] = len(out_idx)
     _provenance(probe, summary, len(out_idx), latest_ts, correlate_info,
@@ -509,7 +524,7 @@ def monitor(cfg: Config, match: Optional[str], lines_n: int,
             for ln in batch:
                 if (_apply(ln, blk, matchers, excludes, focus)
                         and (not correlate or _correl(ln))):
-                    print(_emit(ln, as_json))
+                    print(_emit(ln, as_json, cfg.max_line_len))
                     sys.stdout.flush()
             graces += 1
             # 一次性提示: 启动约 1s 后若仍无任何发现 (dx 慢/失败/空目录), 打诊断到 stderr

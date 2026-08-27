@@ -109,6 +109,8 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 - `--discover-keys`: **关联键发现**——采样窗口, 对一批候选 key(player/scene/session/uid/request/call/order/instance + 配置里的)跑抽取, stdout 输出 JSON: 每个 key 的 `lines_with_key`/`distinct_values`/`sources`/`sample_values`。**与 correlate 同视野(含黑名单/级别过滤)**——报的数字就是 `--correlate` 实际能看到的。挑选标准: 多源出现 + distinct 高 = 好的跨服关联键; 覆盖满但 distinct=1 = 全服常量无区分度。实战发现: 本集群 scene 实例 id 主要在 `[Debug]` 行上, 主配置(含 DEBUG 黑名单)下只能看到 4 行——追 scene 链路加 `--blacklist-del debug` 临时放行即可(实测 4 行 -> 91 行), 不必切配置。
 - `--anchor <epoch>` / `--at "YYYY-MM-DD HH:MM:SS"`: **钉死窗口**——把 `--since` 窗口定在 `[anchor-since, anchor]`, 不随最新日志滑动(需与 `--since` 同用, 否则 exit 2;两者互斥)。**跨次 `--count` 可比**: 回归实验"改前 vs 改后"用同一个 anchor 两次对比; epoch 锚点取上一次 `--summary` 的 `latest_ts`, 人读时间用 `--at`(本地时区)。追加的新行被上界夹掉, 早前行不滑出。
 - `--keep head|tail`: **截断保留端**(默认 tail 最新)——链路起点在窗口头部时(如登录认证段), `--lines` 尾部保留会被后面的刷屏段吃掉, `--keep head` 保留头部。**超限必提示**: 截断发生时 stderr 打 `hint: 命中 X 条(共 Y 行), 只输出 Z 条`——"看到的不一定是全部"显式化。
+- `--max-line-len N`: **超长行截断**(0=不截断)——大 JSON/proto dump 一条几十 KB, 4 条就吃掉大半输出配额; 截断处显式标记 `...[logtail: 行过长已截断, 原文 X 字符]`, agent 知道"这行没看全"。文本与 `--json` 模式都生效。
+- `--enable-source <名>[,<名>...]`: **按名启用 config 里 `enabled: false` 的源**——登录链路排查 `--enable-source login,clientgate` 一条命令拉起, 免手抄 `--source` 的目录+pattern; typo exit 2 列出可用名。源写法: `enabled: false` 保持配置常驻但不采集(比整段注释好, pattern 不会失传)。
 - **动态黑名单三件套**(agent, 仅本次运行、**不写回 config**——TUI 的 `/save` 才落盘, 语义相反别混):
   - `--blacklist-del DEBUG`: 精确移除指定项(按项原文大小写不敏感)——不切双 config 就能看 `[Debug]` 行(查微服务/追 scene 链路); 豁免词不在黑名单里 stderr 提示防 typo。`--allow` 为其别名。
   - `--no-blacklist`: 清空全部黑名单——与 `--source NAME:目录:pattern` 临时源组合**一步到位**拉起微服务视野(临时源此前受主 config 黑名单约束)。

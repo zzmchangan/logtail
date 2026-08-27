@@ -37,6 +37,7 @@ class Config:
     trace: str = ""                            # 实体追踪词; 空=不追踪
     case_sensitive: bool = False               # True: 本次运行所有文本匹配区分大小写
     anchor: float = 0.0                        # >0: --since 窗口钉死在 [anchor-since, anchor]
+    max_line_len: int = 0                       # >0: 输出时截断超长行(大 JSON/proto dump 省 token)
 
     def validate(self) -> None:
         """校验源目录存在、pattern 合法, 给出明确错误."""
@@ -87,12 +88,14 @@ def _parse_source(raw: Dict, date: str) -> SourceConfig:
     path = expand_date(str(raw.get("path", "")), date)
     pattern = expand_date(str(raw.get("pattern", "*.log")), date)
     dx = str(raw.get("dx", ""))
+    enabled = bool(raw.get("enabled", True))
 
     # dx 命令若含 {date} 也一并替换 (如 dx log SceneServer {date})
     if dx:
         dx = expand_date(dx, date)
         # dx 模式无需 path/pattern; 但仍保留以备 glob 兜底
-    return SourceConfig(name=name, path=path, pattern=pattern, dx=dx)
+    return SourceConfig(name=name, path=path, pattern=pattern, dx=dx,
+                        enabled=enabled)
 
 
 def load_config(path: Optional[str], date: str = "") -> Config:

@@ -91,7 +91,8 @@ class TestOutputContract(CliCase):
                        "--ctx-same", "--focus", "--diagnose", "假阴性",
                        "硬上限", "读取未完成", "字面量", "head",
                        "case-sensitive", "anchor", "discover-keys",
-                       "--at", "--keep", "--blacklist-del", "--no-blacklist"):
+                       "--at", "--keep", "--blacklist-del", "--no-blacklist",
+                       "--enable-source", "max-line-len"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -414,6 +415,70 @@ class TestFilteringMatrix(CliCase):
         r = self.A("--focus", "scene,nope")
         self.assertEqual(r.returncode, 2)
         self.assertIn("guild", r.stderr)
+
+    def test_max_line_len_truncation(self):
+        """反馈#1: 大 JSON/proto dump 行(几KB~几十KB)吃掉输出配额 -> --max-line-len 截断."""
+        d = self.dir
+        huge = "x" * 5000
+        with open(os.path.join(d, "huge.log"), "w") as f:
+            f.write(f"[2026-08-27 10:00:01] short line\n")
+            f.write(f"[2026-08-27 10:00:02] GetCollectionDatas proto dump {huge}\n")
+        cfg2 = os.path.join(d, "huge.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
+                    f'    pattern: "huge.log"\nblacklist: []\n')
+        base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50",
+                "--since", "24h"]
+        # 默认不截断
+        r = self.cli(*base)
+        self.assertIn(huge[:200], r.stdout)
+        # --max-line-len 100: 长行截断 + 标记, 短行不受影响
+        r = self.cli(*base, "--max-line-len", "100")
+        lines = r.stdout.strip().splitlines()
+        self.assertLessEqual(len(lines[1]), 200)               # 截断后远小于 5000
+        self.assertIn("截断", lines[1])
+        self.assertIn("short line", lines[0])                  # 短行原样
+        # json 模式同样截断
+        r = self.cli(*base, "--max-line-len", "100", "--json")
+        import json as _j
+        recs = [_j.loads(l) for l in r.stdout.strip().splitlines()]
+        dump = [x for x in recs if "proto" in x["text"]][0]
+        self.assertIn("截断", dump["text"])
+        self.assertLess(len(dump["text"]), 200)
+
+    def test_enable_source(self):
+        """反馈#3: --enable-source login,clientgate 按名启用 config 里的注释态源.
+
+        enabled: false 的源默认不采集; --enable-source 按名启用; typo exit 2。
+        """
+        d = self.dir
+        with open(os.path.join(d, "en.log"), "w") as f:
+            f.write("[2026-08-27 10:00:01] enabled source line\n")
+        with open(os.path.join(d, "dis.log"), "w") as f:
+            f.write("[2026-08-27 10:00:01] disabled source line\n")
+        cfg2 = os.path.join(d, "en.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n"
+                    f"  - name: alpha\n    path: {d}\n    pattern: \"en.log\"\n"
+                    f"  - name: beta\n    path: {d}\n    pattern: \"dis.log\"\n"
+                    f"    enabled: false\nblacklist: []\n")
+        base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50",
+                "--since", "24h"]
+        # 默认: enabled:false 源不采集
+        r = self.cli(*base)
+        self.assertIn("enabled source line", r.stdout)
+        self.assertNotIn("disabled source line", r.stdout)
+        # --enable-source off: 启用
+        r = self.cli(*base, "--enable-source", "beta")
+        self.assertIn("disabled source line", r.stdout)
+        # --diagnose 只看当前启用的源
+        r = self.cli("--diagnose", "--config", cfg2)
+        names = [s["source"] for s in json.loads(r.stdout.strip())["sources"]]
+        self.assertEqual(names, ["alpha"])
+        # typo -> exit 2 列出可用名
+        r = self.cli(*base, "--enable-source", "betaa")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("beta", r.stderr)
 
     def test_summary_per_source_backlog(self):
         """反馈#1: --summary 分源报 backlog_ready, 定位"哪个源没读完"."""

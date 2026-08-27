@@ -61,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  动态黑名单(仅本次运行不写回, /save 才落盘): --blacklist-del DEBUG 放行 [Debug] 行、\n"
             "  --no-blacklist 全清(配 --source 一步拉起微服务视野)、--blacklist-add 临时追加。\n"
             "  --date 仅对含 {date} 占位符的源生效(dx 命令无占位符时给 --date 无效, stderr 会警告)。\n"
+            "  --max-line-len N 截断超长行(proto dump 省配额, 标记原始长度); --enable-source 按名\n"
+            "  启用 config 里 enabled:false 的源(如 --enable-source login,clientgate)。\n"
         ),
     )
     p.add_argument("--config", "-c", default=None,
@@ -121,6 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="清空全部黑名单(查微服务/sceneId 一步到位), 仅本次运行、不写回 config")
     p.add_argument("--allow", default=None,
                    help="deprecated 别名, 等价 --blacklist-del")
+    p.add_argument("--max-line-len", type=int, default=0,
+                   help="输出时截断超长行(字符数, 0=不截断): 大 JSON/proto dump 一条几十KB "
+                        "吃掉输出配额, 截断处会标记原始长度")
+    p.add_argument("--enable-source", default=None,
+                   help="按名启用 config 里 enabled: false 的源(逗号/空格分隔), 如 "
+                        "--enable-source login,clientgate —— 免手抄 --source 的目录+pattern; "
+                        "typo exit 2 列出可用名")
     p.add_argument("--discover-keys", action="store_true",
                    help="采样窗口自报候选关联键的区分度/跨源分布(JSON), 找出最佳跨服关联键")
     p.add_argument("--count", "--cnt", action="store_true",
@@ -178,6 +187,23 @@ def main(argv=None) -> int:
             cfg.level = args.level.upper()
         if args.trace:
             cfg.trace = args.trace
+        # --enable-source: 按名启用 enabled:false 的源; 启用后过滤掉仍禁用的
+        if args.enable_source:
+            import re as _re
+            names = {s.name for s in cfg.sources}
+            wanted = [w for w in _re.split(r"[,\s]+", args.enable_source.strip()) if w]
+            bad = [w for w in wanted if w not in names]
+            if bad:
+                print(f"logtail: --enable-source 无效: {', '.join(bad)} 不在配置的日志源里 "
+                      f"(可用: {', '.join(sorted(names))})", file=sys.stderr)
+                return 2
+            wanted_set = set(wanted)
+            from dataclasses import replace as _dc_replace
+            cfg.sources = [_dc_replace(s, enabled=True) if s.name in wanted_set else s
+                           for s in cfg.sources]
+        cfg.sources = [s for s in cfg.sources if s.enabled]
+        if args.max_line_len:
+            cfg.max_line_len = args.max_line_len
         # fail-fast: --focus 按配置源名精确匹配(支持逗号/空格分隔多源);
         # typo/大小写错若静默 0 行, 会伪装成"没日志"。列出可用名便于自查。
         if args.focus:

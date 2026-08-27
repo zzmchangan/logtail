@@ -53,6 +53,20 @@ log_sources:
     path: /data/vm-ro3-deploys/log/ms/TeamService
     pattern: "team-service-*/team_service.log"
 
+  # 登录/认证链路(高频排查场景): 默认关, 用 --enable-source login,clientgate 按名拉起,
+  # 免手抄 --source 的目录+pattern。⚠️ clientgate 单文件可达 173MB+, 宽窗(--since >5m)
+  # 易顶 30s backlog 硬上限 —— 建议窄窗(--since 3m)+ --keep head。
+  # 锚点语义: scenemgr 的 userLoginFinish 是 Account 层完成时刻(不代表进游戏完成);
+  # 判"完整登录"以 LoginPoint step1 起点 / step16 reason:Login 为准。
+  - name: login
+    path: /data/vm-ro3-deploys/log/ms/LoginService
+    pattern: "login-service-*/login_service.log"
+    enabled: false
+  - name: clientgate
+    path: /data/vm-ro3-deploys/log/ms/ClientGateService
+    pattern: "client-gate-service-*/client_gate_service.log"
+    enabled: false
+
   # bar 暂不需要, 按需取消注释(同 team 一样是微服务, 去 DEBUG 黑名单查):
   # - name: bar
   #   path: /data/vm-ro3-deploys/log/ms/BarService
