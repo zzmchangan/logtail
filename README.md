@@ -132,6 +132,39 @@ correlation_keys:
 - 黑名单**始终生效**; 不带 `--match`/`-C` 时输出黑名单过滤后的全部最近 N 行。
 - Agent 修 bug 的用法: 先 `--match` 收窄到错误行 → `-C` 补上下文 → `--since` 限时间段 → `re:` 正则再收窄 → 拿到极少量却完整的线索。
 
+### 常见排查配方 (任务 → 一发命令)
+**登录链路**(一发拉齐 7 源, 拿 step 序列与耗时):
+```bash
+logtail --agent --config config.yaml --enable-source login,clientgate \
+  --blacklist-del debug --since 90m --keep head --correlate player=<玩家id> --lines 200
+```
+锚点纪律: 判"完整登录"以 **LoginPoint step1 起点 / step16 reason:Login** 为准(scenemgr 的 `userLoginFinish` 是 Account 层时刻, 按它定锚会少掉整个选角+step 序列)。
+
+**重连判定**(区分重连 vs 新登录):
+```bash
+logtail --agent --config config.yaml --match 're:relogin|OnReconnect|replace.?login' --since 30m --count
+```
+
+**跨服/不知道用哪个 id**(先发现再追):
+```bash
+logtail --discover-keys --config config.yaml --blacklist-del debug --since 30m
+# 挑多源出现+distinct 高的 key, 然后:
+logtail --agent --config config.yaml --correlate <key>=<value> --since 30m
+```
+
+**爆发探针**(改前/改后可比):
+```bash
+logtail --agent --config config.yaml --level ERROR --count --since 90m --summary
+# 记下 latest_ts; 复测时 --anchor <latest_ts> 钉住同一窗口对比
+```
+
+**微服务**(不切配置):
+```bash
+logtail --agent --config config.yaml --blacklist-del debug --focus team --since 30m
+```
+
+起步窗口纪律: clientgate/login 等大源**推荐 ≤90m**(宽窗会顶 30s backlog 上限); 先窄后宽, 定位到时间点再用 `--at` 钉窗展开。
+
 ### 三层读取模型 (用对的关键)
 参数分三层,**各自独立的旋钮**,想通这个就不会出现"match 了明明存在的行却空":
 

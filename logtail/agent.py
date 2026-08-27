@@ -231,10 +231,12 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     follower.start()
 
     seen: List = []
-    hard_deadline = time.monotonic() + hard_cap   # backlog 阶段硬上限 (防挂死)
+    t_start = time.monotonic()
+    hard_deadline = t_start + hard_cap            # backlog 阶段硬上限 (防挂死)
     live_deadline = None                          # backlog 完成后: 实时跟随截止
     idle = 0
     backlog_done = False
+    backlog_secs = 0.0                            # backlog 阶段耗时 (宽窗护栏用)
     try:
         while True:
             now = time.monotonic()
@@ -256,6 +258,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
                 if live_deadline is None:
                     live_deadline = time.monotonic() + wait
                     backlog_done = True
+                    backlog_secs = time.monotonic() - t_start   # backlog 阶段耗时
             else:
                 if live_deadline is not None:
                     live_deadline = None
@@ -277,6 +280,10 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         print(f"logtail: warning: 历史窗口读取未完成 ({hard_cap:g}s 硬上限内 backlog 未读完), "
               f"结果可能不完整 —— 未读完的源: {', '.join(not_ready) or '(未知)'}; "
               f"检查该源是否极慢/文件是否超大, 或拆小窗口重查", file=sys.stderr)
+    elif since and since > 21600 and backlog_secs > 2.0:
+        # P1 宽窗护栏: 主动提示优于文档警告 (agent 对手册警告执行力弱)
+        print(f"logtail: hint: 宽窗(--since > 6h)读取耗时 {backlog_secs:.1f}s —— "
+              f"建议拆小窗口(≤90m)分段探针, 先窄后宽定位再展开", file=sys.stderr)
 
     seen.sort(key=lambda l: (l.ts_key, l.seq))
 
@@ -401,7 +408,8 @@ def _split_correlate(text: Optional[str]):
 # 候选关联键发现用的内置正则集 (大小写不敏感; 配置 correlation_keys 同名覆盖)。
 # 目的不是猜哪个 id 是"对的", 而是把每个候选的区分度/跨源分布摆出来让使用者挑。
 _DISCOVER_CANDIDATES = [
-    ("player", [r'"?guid"?[:=] *"?(\d+)', r'"?roleid"?[:=] *"?(\d+)', r'"?player"?[:=] *"?(\d+)']),
+    ("player", [r'"?guid"?[:=] *"?(\d+)', r'"?roleid"?[:=] *"?(\d+)',
+                r'"?player"?[:=] *"?(\d+)', r'"?userid"?[:=] *"?(\d+)']),
     ("session", [r"[?&\s]s=([0-9a-zA-Z]+)"]),
     ("uid", [r"\buid[:=] *(\w+)"]),
     ("request", [r"\brequest_?id[:=] *(\w+)", r"\breqid[:=] *(\w+)"]),

@@ -55,7 +55,7 @@ log_sources:
 
   # 登录/认证链路(高频排查场景): 默认关, 用 --enable-source login,clientgate 按名拉起,
   # 免手抄 --source 的目录+pattern。⚠️ clientgate 单文件可达 173MB+, 宽窗(--since >5m)
-  # 易顶 30s backlog 硬上限 —— 建议窄窗(--since 3m)+ --keep head。
+  # 易顶 30s backlog 硬上限 —— 推荐起步窗口 ≤90m, 先窄后宽; 配 --keep head。
   # 锚点语义: scenemgr 的 userLoginFinish 是 Account 层完成时刻(不代表进游戏完成);
   # 判"完整登录"以 LoginPoint step1 起点 / step16 reason:Login 为准。
   - name: login
@@ -106,7 +106,8 @@ correlation_keys:
     extract:
       - '"?Guid"?[:=] *"?(\d+)'       # [Player Guid:1276679028765 ...] 与 JSON "Guid":"123" 都认
       - '"?roleId"?[:=] *"?(\d+)'
-      - '"?player"?[:=] *"?(\d+)' 
+      - '"?player"?[:=] *"?(\d+)'
+      - '"?userId"?[:=] *"?(\d+)'      # scene LoginPoint 全链 userid: 写法
   # 注意: s=xxx&c=xxx token 实测窗口内每行都有 (lines_with_key==lines_total),
   # 是全服常量、无区分度, 不作关联键; 若确认有请求级唯一 token 再加。
   #

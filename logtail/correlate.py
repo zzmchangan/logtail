@@ -31,6 +31,7 @@ _PRESETS: Dict[str, List[str]] = {
         r'"?player"?\s*[:=]\s*"?(\d+)',
         r'"?roleid"?\s*[:=]\s*"?(\d+)',
         r'"?guid"?\s*[:=]\s*"?(\d+)',
+        r'"?userid"?\s*[:=]\s*"?(\d+)',   # scene LoginPoint 全链用 userid: 写法
     ],
     # 副本/场景实例 id: 实测跨 guild+scene+scenemgr 且区分度高 (discover-keys 发现)。
     # 三种写法都要认: scene: (guild) / sceneId: (scene) / scene_id= (通用)

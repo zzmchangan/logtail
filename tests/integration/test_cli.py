@@ -480,6 +480,36 @@ class TestFilteringMatrix(CliCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("beta", r.stderr)
 
+    def test_wait_default_zero(self):
+        """P0: agent dump 默认 --wait=0 —— 活水日志下 idle 永不触发, 默认 2s 纯浪费.
+
+        跟随看新行是交互需求; 一次性 dump 拿到 backlog 即返回。
+        """
+        from logtail.cli import build_parser
+        self.assertEqual(build_parser().get_default("wait"), 0.0)
+
+    def test_userid_in_player_preset(self):
+        """P2: scene LoginPoint 用 userid: 写法, player 预设必须认."""
+        from logtail.correlate import CorrelationKeys
+        ck = CorrelationKeys()
+        self.assertEqual(ck.extract1("userid:1276679028761 LoginPoint step1", "player"),
+                         "1276679028761")
+        self.assertEqual(ck.extract1('"userId":"123"', "player"), "123")
+
+    def test_wide_window_slow_hint(self):
+        """P1: 宽窗(since>6h)+backlog 慢时 stderr 护栏提示分段探针."""
+        d = self.dir
+        with open(os.path.join(d, "wide.log"), "w") as f:
+            f.write("[2026-08-27 10:00:01] wide window line\n")
+        cfg2 = os.path.join(d, "wide.yaml")
+        with open(cfg2, "w") as f:
+            f.write('log_sources:\n  - name: s\n    dx: "bash -c \'sleep 3 && '
+                    f'echo {d}/wide.log\'"\nblacklist: []\n')
+        r = self.cli("--agent", "--config", cfg2, "--since", "24h",
+                     "--wait", "0", "--lines", "10")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("分段", r.stderr)                         # 宽窗护栏提示
+
     def test_summary_per_source_backlog(self):
         """反馈#1: --summary 分源报 backlog_ready, 定位"哪个源没读完"."""
         r = self.A("--summary")
