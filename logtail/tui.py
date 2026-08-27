@@ -128,6 +128,12 @@ class Tui:
         idx = self.color_pool.color_for(rule.rule_id)
         return self._pair_by_idx.get(idx, 0)
 
+    def _search_attr(self) -> int:
+        """搜索词专属醒目属性: 加粗 + 反显, 让命中的关键词一眼可见."""
+        if not self.has_color:
+            return curses.A_BOLD | curses.A_REVERSE
+        return curses.A_BOLD | curses.A_REVERSE
+
     _LEVEL_COLOR = {"ERROR": "red", "FATAL": "red", "WARN": "yellow",
                     "INFO": "cyan", "DEBUG": "blue", "TRACE": "blue"}
 
@@ -270,8 +276,12 @@ class Tui:
             body_w = max(1, w - 1 - start_x)
             segs = wrap_text(line.text, body_w) or [""]
             is_hit = hit_line is not None and line is hit_line
+            # 命中行额外注入搜索规则, 让命中的关键词本身也被标亮
+            row_hl = hl_rules
+            if is_hit and self.search_rule is not None:
+                row_hl = [self.search_rule] + list(hl_rules)
             for i, seg in enumerate(segs):
-                out.append((prefix if i == 0 else None, seg, hl_rules, dim,
+                out.append((prefix if i == 0 else None, seg, row_hl, dim,
                             line.level, is_hit))
         return out
 
@@ -340,7 +350,11 @@ class Tui:
 
         spans = []
         for rule in hl_rules:
-            attr = self._attr_for(rule)
+            # 搜索规则用专属醒目属性 (加粗+反显), 其余用普通高亮色
+            if self.search_rule is not None and rule is self.search_rule:
+                attr = self._search_attr()
+            else:
+                attr = self._attr_for(rule)
             for s, e in self._match_spans(rule, seg):
                 spans.append((s, e, attr))
         spans.sort(key=lambda s: (s[0], s[1] - s[0]))
@@ -399,7 +413,10 @@ class Tui:
         if key in (curses.KEY_ENTER, 10):
             # 回车: 在执行前先解冻跳到最新 (命令/搜索提交后回底)
             return "execute", buf, ""
-        if key == 27:                       # ESC 清空输入
+        if key == 27:                       # ESC 清空输入 + 退出搜索态
+            self.search_active = False
+            self.search_idx = -1
+            self._hit_line = None
             return "clear_input", "", ""
         if key in (curses.KEY_BACKSPACE, 127, curses.KEY_DC):
             return None, buf[:-1], ""

@@ -22,7 +22,22 @@ def build_parser() -> argparse.ArgumentParser:
         prog="logtail",
         description="多文件实时日志聚合查看工具: 单终端聚合跟踪多日志文件, "
                     "支持黑名单过滤、交互式高亮、上下文聚焦、暂停/恢复、历史回溯。",
-        epilog="也可 --agent 开启非交互模式, 供 AI Agent / 管道消费过滤后的少量日志。",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "非交互 / 脚本 / AI 场景必须加 --agent, 否则进入全屏交互 TUI (curses, 需真实终端)。\n"
+            "\n"
+            "输出契约 (AI Agent / 脚本接入):\n"
+            "  日志正文只写 stdout, 错误/提示写 stderr (可 2>/dev/null 只取正文)。\n"
+            "  每行 = '{时间戳} {来源:<12} {正文}'; 退出码: 0=成功(含 0 命中), 2=配置/参数/正则错误。\n"
+            "  agent 一次性收集后按 (时间戳, 序列号) 全局排序; 无时间戳行退化为到达时刻。\n"
+            "  空结果/--count 0 时先看 stderr: 有 warning 或 --summary 的 JSON 里 files==0/发现失败\n"
+            "  -> 是'源没被发现'而非'没错误' (避免 exit 0 + 空输出 = 假阴性); files>0 才可信。\n"
+            "\n"
+            "作用域提示:\n"
+            "  --lines/--wait/--count 仅 agent 生效; --mode monitor 忽略 -C/--since/--count。\n"
+            "  --since(dump) 以窗口内最新日志时间戳为参考; '-C 5s' 时间窗仅交互版可用 (agent 的 -C 只接受行数)。\n"
+            "  --wait(dump) 自收到首条有效行后约 1s 无新行才提前返回(初始化期不提前, 会等到 --wait)。\n"
+        ),
     )
     p.add_argument("--config", "-c", default=None,
                    help="配置文件路径 (YAML); 支持 {date} 占位符")
@@ -58,6 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="agent 模式输出/收集的行数上限 (默认 50)")
     p.add_argument("--wait", type=float, default=2.0,
                    help="agent dump 模式收集窗口 (秒, 默认 2.0)")
+    p.add_argument("--summary", action="store_true",
+                   help="agent 结束时把'发现诊断'(JSON)写到 stderr, 区分'无日志'与'源未发现'")
     p.add_argument("--version", action="version", version=f"logtail {__version__}")
     return p
 
@@ -90,14 +107,16 @@ def main(argv=None) -> int:
         from .agent import dump, monitor
         try:
             if args.agent_mode == "monitor":
-                return monitor(cfg, args.match, args.lines, exclude=args.exclude)
+                return monitor(cfg, args.match, args.lines,
+                               exclude=args.exclude, summary=args.summary)
             # dump: --context/-C 可当作命中行的上下文窗口 (结合 --match 用)
             # --trace 作为 match 但零上下文 (纯命中行, 无邻居)
             match = args.trace if args.trace else args.match
             ctx = 0 if args.trace else args.context
             return dump(cfg, match, args.lines, args.wait,
                         context=ctx, since=since,
-                        count_only=args.count, exclude=args.exclude)
+                        count_only=args.count, exclude=args.exclude,
+                        summary=args.summary)
         except RulePatternError as exc:
             print(f"logtail: --match 规则错误: {exc}", file=sys.stderr)
             return 2

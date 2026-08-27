@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import time
@@ -67,10 +68,40 @@ def _apply(ln, blk: RuleSet, matchers: List[Rule],
     return True
 
 
+def _provenance(probe: List[dict], summary: bool, out_count: int) -> None:
+    """把"发现诊断"写到 stderr, 使"空输出/0命中"能与"源压根没发现"区分开.
+
+    这是对"exit 0 + 空输出 = 假阴性"陷阱的解法: 发现失败(0 文件 / dx 失败)时给出
+    独立信号, 否则 agent 会把"源没被发现"当成"没错误"而停止排查。
+    - 恒: 所有源都没发现文件, 或某源 dx 失败 -> 打人读警告到 stderr (默认开启, 不污染 stdout)。
+    - summary: 额外打一条 JSON 记录到 stderr, 供 agent 程序化 cross-check。
+    """
+    if not probe:
+        return
+    total_files = sum(s.get("files", 0) for s in probe)
+    discovered = any(s.get("discovered") for s in probe)
+    dx_fail = [s["source"] for s in probe if s.get("dx_error")]
+    if not discovered:
+        msg = f"warning: 未发现任何日志文件 (共 {len(probe)} 源)"
+        if dx_fail:
+            msg += f"; dx 源失败: {', '.join(dx_fail)}"
+        msg += " —— 输出为空 ≠ '无错误', 请先排查日志源 (dx 能否返回路径/目录是否为空)"
+        print(msg, file=sys.stderr)
+    elif dx_fail:
+        print(f"warning: 以下源未发现日志/dx 失败: {', '.join(dx_fail)}", file=sys.stderr)
+    if summary:
+        print(json.dumps({
+            "kind": "logtail.summary",
+            "sources": probe,
+            "total_files": total_files,
+            "matched": out_count,
+        }, ensure_ascii=False), file=sys.stderr)
+
+
 def dump(cfg: Config, match: Optional[str], lines_n: int,
          wait: float = 2.0, context: int = 0,
          since: Optional[float] = None, count_only: bool = False,
-         exclude: Optional[str] = None) -> int:
+         exclude: Optional[str] = None, summary: bool = False) -> int:
     """收集最近若干行(经黑名单/可选 match/时间窗), 打印后退出.
 
     context   > 0: 每条命中行连同前后各 context 行一起输出。
@@ -91,21 +122,27 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     seen: List = []
     deadline = time.monotonic() + wait
     idle = 0
+    saw_batch = False        # 是否已收到过任何批 (区分"正在初始化"与"日志确已静默")
     try:
         while time.monotonic() < deadline:
             batch = follower.queue.drain()
+            if batch:
+                saw_batch = True
             for ln in batch:
                 # 黑名单 + 级别剔除 (match 在最后输出时再判, 这里先收集)
                 if not blk.blocked(ln.text) and blk.level_ok(ln.level):
                     seen.append(ln)
             if seen:
                 idle = 0
+            elif saw_batch:
+                idle += 1        # 已越过初始化、开始收到批 -> 才开始计空闲
             else:
-                idle += 1
-            if idle >= 20:          # ~1s 无有效行, 提前退出
+                idle = 0         # 尚未收到任何批 (如 dx 子进程尚未出首行), 耐心等待
+            if idle >= 20:       # ~1s 无有效行 (且已越过初始化), 提前退出
                 break
             time.sleep(0.05)
     finally:
+        probe = follower.probe()   # stop() 会清空 _workers, 故先取
         follower.stop()
 
     seen.sort(key=lambda l: (l.ts_key, l.seq))
@@ -123,12 +160,14 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         # count 不管有无 match: 统计通过 黑名单+级别+match/exclude 的行数
         n_hit = sum(1 for ln in seen if _apply(ln, blk, matchers, excludes))
         print(n_hit)
+        _provenance(probe, summary, n_hit)
         return 0
 
     if not matchers:
         out = seen[-lines_n:]           # 无 match: 输出最近 lines_n 行
         for ln in out:
             print(format_line(ln))
+        _provenance(probe, summary, len(out))
         return 0
     else:
         hit_idx = [i for i, ln in enumerate(seen)
@@ -149,6 +188,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         for i in out_idx:
             ln = seen[i]
             print(format_line(ln))
+        _provenance(probe, summary, len(out_idx))
     return 0
 
 
@@ -160,7 +200,7 @@ def _split_terms(text: Optional[str]) -> List[str]:
 
 
 def monitor(cfg: Config, match: Optional[str], lines_n: int,
-            exclude: Optional[str] = None) -> int:
+            exclude: Optional[str] = None, summary: bool = False) -> int:
     """持续把过滤后的日志打到 stdout, 直到 Ctrl+C."""
     matchers = _build_match_rules(_split_terms(match))
     excludes = _build_exclude_rules(_split_terms(exclude))
@@ -168,6 +208,8 @@ def monitor(cfg: Config, match: Optional[str], lines_n: int,
     follower = LogFollower(cfg.sources, history=cfg.history or lines_n,
                            since=cfg.since)
     follower.start()
+    warned = False
+    graces = 0
     try:
         while True:
             batch = follower.queue.drain()
@@ -175,6 +217,11 @@ def monitor(cfg: Config, match: Optional[str], lines_n: int,
                 if _apply(ln, blk, matchers, excludes):
                     print(format_line(ln))
                     sys.stdout.flush()
+            graces += 1
+            # 一次性提示: 启动约 1s 后若仍无任何发现 (dx 慢/失败/空目录), 打诊断到 stderr
+            if not warned and graces >= 20:
+                _provenance(follower.probe(), summary, out_count=0)
+                warned = True
             time.sleep(0.05)
     except KeyboardInterrupt:
         pass

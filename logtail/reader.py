@@ -49,6 +49,10 @@ class _SourceWorker(threading.Thread):
         self._owner = owner
         self._files: Dict[str, _FileFollower] = {}
         self._stop_event = threading.Event()
+        # 发现诊断: 让 agent 区分"没日志"与"源压根没发现" (dx 失败/0 文件)
+        self._files_discovered = 0      # 最近一次扫描发现的文件数
+        self._ever_found = False        # 是否曾发现过文件
+        self._dx_error = ""             # dx 失败原因 (空=正常)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -78,19 +82,28 @@ class _SourceWorker(threading.Thread):
             out = subprocess.run(shlex.split(self.src.dx), capture_output=True,
                                  text=True, check=False, timeout=10)
         except OSError as exc:
-            # dx 命令找不到等情况: 静默, 下轮重试 (dir 可能尚未就绪)
+            # dx 命令找不到等情况: 记录原因供诊断 (否则 agent 会误以为"没日志")
+            self._dx_error = f"dx 无法运行: {exc}"
             return []
         except subprocess.TimeoutExpired:
+            self._dx_error = "dx 命令超时"
             return []
         if out.returncode != 0:
+            self._dx_error = f"dx 返回码 {out.returncode}: {(out.stderr or '').strip()[:200]}"
             return []
+        self._dx_error = ""
         return [p.strip() for p in out.stdout.splitlines() if p.strip()]
 
     def _scan_and_read(self) -> None:
-        for path in self._current_paths():
+        # 只求一次路径列表, 读与清理复用 (dx 源每次会跑子进程, 求两次翻倍开销)
+        paths = self._current_paths()
+        self._files_discovered = len(paths)
+        if paths:
+            self._ever_found = True
+        for path in paths:
             self._read_file(path)
 
-        found = set(self._current_paths())
+        found = set(paths)
         # 清理已不存在 / 不再匹配的文件 (轮转后旧文件)
         for path, st in list(self._files.items()):
             if path in found:
@@ -98,6 +111,15 @@ class _SourceWorker(threading.Thread):
             if not os.path.exists(path):
                 st.closed = True
                 del self._files[path]
+
+    def probe_status(self) -> dict:
+        """返回该源的发现诊断, 供 agent 区分"没日志"与"源压根没发现"."""
+        return {
+            "source": self.src.name,
+            "files": len(self._files),   # 当前跟踪的文件数
+            "discovered": self._ever_found,
+            "dx_error": self._dx_error,
+        }
 
     def _read_file(self, path: str) -> None:
         try:
@@ -274,6 +296,10 @@ class LogFollower:
         """丢弃当前读取偏移; worker 下一轮会重新 glob 并定位到文件末尾."""
         for w in self._workers:
             w._files.clear()
+
+    def probe(self) -> List[dict]:
+        """返回各源的发现诊断 (agent 用, 区分"没日志"与"源未发现")."""
+        return [w.probe_status() for w in self._workers]
 
 
 class _UnboundedQueue:
