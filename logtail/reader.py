@@ -27,6 +27,7 @@ from .levelparse import parse_level
 
 POLL_INTERVAL = 0.2          # 轮询间隔 (秒)
 SINCE_CAP = 8_000_000        # --since 兜底回读上限 (8MB; 二分定位失败时才用)
+DX_TTL = 5.0                 # dx 结果缓存秒数: 短命 dump 生命周期内每源只跑一次子进程
 BS_PROBE_BYTES = 64 * 1024   # 二分探针的单次读取块
 
 
@@ -139,12 +140,15 @@ class _SourceWorker(threading.Thread):
         self._dx_error = ""             # dx 失败原因 (空=正常)
         self._scans = 0                 # 已完成的扫描轮数 (backlog_ready 要求 >=2,
                                         # 给慢/抖动的 dx 两次发现机会)
+        self._dx_cache = (0.0, [])      # (过期时刻, paths): dx 结果 TTL 缓存
 
     def stop(self) -> None:
         self._stop_event.set()
 
     def run(self) -> None:
-        while not self._stop_event.wait(POLL_INTERVAL):
+        first = True
+        while not self._stop_event.wait(0 if first else POLL_INTERVAL):
+            first = False               # 首轮立即扫: dump 少等一个轮询周期
             try:
                 self._scan_and_read()
             except Exception:
@@ -155,11 +159,17 @@ class _SourceWorker(threading.Thread):
     def _current_paths(self) -> List[str]:
         """当前应跟踪的具体文件路径列表.
 
-        若配置了 dx 命令, 则运行它拿返回的文件路径 (每行一个);
+        若配置了 dx 命令, 则运行它拿返回的文件路径 (每行一个, 结果缓存 DX_TTL 秒
+        —— 短命 dump 生命周期内每源只跑一次子进程, 提速且减负);
         否则按 glob 匹配 path/pattern。
         """
         if self.src.dx:
-            return self._dx_paths()
+            now = time.monotonic()
+            if now < self._dx_cache[0]:
+                return self._dx_cache[1]
+            paths = self._dx_paths()
+            self._dx_cache = (now + DX_TTL, paths)
+            return paths
         pattern = os.path.join(self.src.path, self.src.pattern)
         return glob.glob(pattern)
 
@@ -236,8 +246,8 @@ class _SourceWorker(threading.Thread):
                 start = self._history_start(path, size)
             else:
                 start = size
-            self._files[path] = _FileFollower(path, inode, start)
-            return
+            existing = self._files[path] = _FileFollower(path, inode, start)
+            # 不 return: 注册当轮即读 —— dump 首轮出数据, 不必等下一轮询周期
 
         if existing.inode != inode:
             # 同一路径被新文件替换 (rename+新文件 / copytruncate): 重新开读

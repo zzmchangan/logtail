@@ -47,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  --lines/--wait/--count 仅 agent 生效; --mode monitor 忽略 -C/--since/--count。\n"
             "  --since(dump) 以窗口内最新日志时间戳为参考; '-C 5s' 时间窗仅交互版可用 (agent 的 -C 只接受行数)。\n"
             "  --wait(dump) 是backlog完成后实时跟随的时长(默认0, 活水下idle不触发; 跟随给--wait 5);\n"
+            "  --since 裸数字=秒(90=90s); --hard-cap 可调大宽窗读取上限(默认30s)。\n"
             "  由信号驱动等完(30s硬上限), 超时 stderr 警告'读取未完成'——空结果勿当结论。\n"
             "  --ctx-same N 仅 agent+match(同进程上下文, 与 -C 全局互补); --diagnose 独立健康检查(不 tail)。\n"
             "  --focus <源名[,源名...]> 源聚焦(精确匹配, 多源逗号分隔; 未知/typo exit 2 列出可用名);\n"
@@ -136,6 +137,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="agent dump 模式只输出命中行数, 不打印正文 (快速判断是否爆发)")
     p.add_argument("--lines", "-n", type=int, default=50,
                    help="agent 模式输出/收集的行数上限 (默认 50)")
+    p.add_argument("--hard-cap", type=float, default=30.0,
+                   help="backlog(历史窗口)读取的硬上限秒数 (默认 30)。宽窗+超大文件读不完时"
+                        "可调大, 代价是未读完前会一直等")
     p.add_argument("--wait", type=float, default=0.0,
                    help="agent dump 实时跟随时长 (秒, 默认 0 —— 一次性 dump 拿到历史窗口即返回;"
                         " 活水日志下 idle 提前返回永不触发, 默认 2s 是纯浪费)。要跟随新行给 --wait 5; "
@@ -300,7 +304,8 @@ def main(argv=None) -> int:
                         count_only=args.count, exclude=args.exclude,
                         summary=args.summary, ctx_same=args.ctx_same,
                         as_json=args.as_json, focus=args.focus,
-                        correlate=args.correlate, keep=args.keep)
+                        correlate=args.correlate, keep=args.keep,
+                        hard_cap=args.hard_cap)
         except RulePatternError as exc:
             print(f"logtail: --match 规则错误: {exc}", file=sys.stderr)
             return 2
@@ -320,12 +325,15 @@ def _parse_duration(text: Optional[str]) -> Optional[float]:
         return None
     text = text.strip().lower()
     m = __import__("re").match(r"^(\d+)([smhd])$", text)
-    if not m:
-        raise ValueError(f"--since 无效: {text!r} (仅支持单单位, 如 30s/5m/1h/90m; "
-                         f"不支持复合(1h30m)/小数(1.5h)/裸数字(90))")
-    n = int(m.group(1))
-    unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
-    return n * unit
+    if m:
+        n = int(m.group(1))
+        unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+        return n * unit
+    m = __import__("re").match(r"^(\d+)$", text)               # 裸数字 = 秒
+    if m:
+        return int(m.group(1))
+    raise ValueError(f"--since 无效: {text!r} (如 30s/5m/1h/90m; 裸数字=秒(90=90s); "
+                     f"不支持复合(1h30m)/小数(1.5h))")
 
 
 _AT_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",

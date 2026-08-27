@@ -510,6 +510,31 @@ class TestFilteringMatrix(CliCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("分段", r.stderr)                         # 宽窗护栏提示
 
+    def test_hard_cap_flag(self):
+        """解除限制: --hard-cap 可调 (宽窗用户不再被 30s 上限卡死)."""
+        d = self.dir
+        with open(os.path.join(d, "hc.log"), "w") as f:
+            f.write("[2026-08-27 10:00:01] hc line\n")
+        cfg2 = os.path.join(d, "hc.yaml")
+        with open(cfg2, "w") as f:
+            f.write('log_sources:\n  - name: s\n    dx: "bash -c \'sleep 3 && '
+                    f'echo {d}/hc.log\'"\nblacklist: []\n')
+        # hard-cap 0.5s < dx 3s -> 未完成警告(快速失败)
+        r = self.cli("--agent", "--config", cfg2, "--since", "24h",
+                     "--hard-cap", "0.5")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("未完成", r.stderr)
+        from logtail.cli import build_parser
+        self.assertEqual(build_parser().get_default("hard_cap"), 30.0)
+
+    def test_since_bare_number_is_seconds(self):
+        """解除潜规则: --since 90 = 90 秒 (裸数字不再 exit 2)."""
+        from logtail.cli import _parse_duration
+        self.assertEqual(_parse_duration("90"), 90)
+        self.assertEqual(_parse_duration("90s"), 90)
+        with self.assertRaises(ValueError):                        # 复合仍拒绝
+            _parse_duration("1h30m")
+
     def test_summary_per_source_backlog(self):
         """反馈#1: --summary 分源报 backlog_ready, 定位"哪个源没读完"."""
         r = self.A("--summary")

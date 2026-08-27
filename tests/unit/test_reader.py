@@ -248,6 +248,36 @@ class TestLineIntegrity(FollowerCase):
             f.stop()
 
 
+class TestSpeed(FollowerCase):
+    def test_dx_result_cached_within_ttl(self):
+        """提速: dx 结果 TTL 缓存 —— 短命 dump 生命周期内每源只跑一次 dx 子进程."""
+        d = tmpdir()
+        counter = os.path.join(d, "cnt")
+        log = os.path.join(d, "a.log")
+        write(log, "x\n")
+        # dx 每跑一次就 append 一行计数
+        dx = f"bash -c 'echo {log} >> {counter}; echo {log}'"
+        f = LogFollower([SourceConfig("s", "", "", dx=dx)])
+        f.start()
+        try:
+            time.sleep(1.2)                                        # ~6 个轮询周期
+        finally:
+            f.stop()
+        runs = len(open(counter).read().splitlines())
+        self.assertLessEqual(runs, 2, f"1.2s 内 dx 跑了 {runs} 次 (应 <=2, TTL 缓存)")
+
+    def test_new_file_read_same_cycle(self):
+        """提速: 新文件注册当轮即读(不必等下一轮) —— glob 源 dump 首轮出数据."""
+        write(self.path, "instant line\n")
+        f = self.run_follower(history=5)
+        f.start()
+        try:
+            got = collect(f, want=1, timeout=0.6)                 # 旧: 需 2 轮 >0.4s
+            self.assertEqual([l.text for l in got], ["instant line"])
+        finally:
+            f.stop()
+
+
 class TestDxPaths(unittest.TestCase):
     def worker(self, dx):
         f = LogFollower([SourceConfig("s", "", "", dx=dx)])
