@@ -185,6 +185,10 @@ def _list_item_no_comment(raw_value: str) -> str:
     idx = v.find(" #")
     if idx >= 0:
         v = v[:idx].rstrip()
+    # 去掉成对包裹引号: 配置里 '- "hb"' 与运行时裸词 'hb' 应视为同值,
+    # 否则 /save 时带引号旧项的行内注释无法贴回 (example.yaml 全是引号写法)。
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        v = v[1:-1]
     return v
 
 

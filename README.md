@@ -132,6 +132,20 @@ correlation_keys:
 - **`--summary` 锚点**: JSON 里含 `latest_ts`——`--since` 实际锚定的"最新一条日志时间戳"。agent 据它自校验"这个窗口对齐的是哪个时间", 尤其注意 GM 调时间(multiTimeOffset)会让日志时间≠墙钟, 别用墙钟去对。
 - **`--diagnose`**: 独立健康检查(不 tail), JSON 到 stdout。**拿到空结果先跑它**: 若某源 `discovered:false`/`dx_error` 非空 → 源没被找到, 别下"无错误"结论。
 
+### AI 排查工作流与坑（心得体会）
+
+**一个连贯的排查闭环**（probe → narrow → expand → conclude），每环都有便宜、可组合的工具：
+- **probe**：`--count --since 5m` 探是否爆发；`--diagnose` 确认源活着。
+- **narrow**：`--match <词>` 或 `--correlate player=<id>` 收窄到实体。
+- **expand**：`--ctx-same N` 追**单进程因果**（比 `-C` 更能还原"这条错误背后的故事"，因为 `-C` 是全局时间邻居、会混进别的进程的行）。
+- **conclude**：`--json` 编程级加工 + `--summary` 看锚点/自检。
+
+**两条还不兴写进别处的坑**：
+- `--source NAME:目录:pattern` 的 PATH 是**目录不是文件**——直连单文件要用 glob 目录 + pattern；要用 dx 源只能改 config。
+- `--lines` 要 ≥ 目标行跨度，太小读不到周期性行（如 `GCInfo`）——这类行每隔几秒一条，`--lines 30` 会只取到最近 30 条而把更早的漏掉。
+
+**游戏服务器专属认知**：跨进程跟一条逻辑链路，前提是那个 id 真的出现在多服日志里；playerId 偏 Scene 侧。若想跨服追请求级链路，需游戏在日志里注入稳定的 callId / requestId。
+
 ## 交互命令
 | 命令 | 缩写 | 作用 |
 |---|---|---|
@@ -198,12 +212,24 @@ correlation_keys:
 6. 输入 `/all` 回全量, 完整追踪链路。
 
 ## 开发 & 测试
+
+**全量测试(推荐, 一条命令)**:
+```bash
+bash tests/run_all.sh
+```
+
+**分层测试**(全部零依赖, stdlib unittest):
+| 层 | 命令 | 覆盖 |
+|---|---|---|
+| 单元 (145 个) | `PYTHONPATH=. python3 -m unittest discover -s tests/unit` | timeparse/levelparse/rules/correlate/models/config(含 /save 回写)/timeline(上下文·时间窗·搜索·trace)/reader(tail·轮转·history·since·dx·probe)/agent(dump 全分支) |
+| 集成 (31 个) | `PYTHONPATH=. python3 -m unittest discover -s tests/integration` | CLI 子进程端到端: 全 flag 矩阵、stdout/stderr/退出码契约、monitor(含 SIGINT、BrokenPipe)、--diagnose |
+| 模糊 (12 个) | `PYTHONPATH=. python3 -m unittest discover -s tests/fuzz` | 固定种子随机输入: 不崩溃/不变量(normalize 幂等、裸词 iff 子串、行数守恒、count==行数) |
+| 冒烟 | `PYTHONPATH=. python3 tests/smoke_test.py` | 模块级快速冒烟 |
+| Agent 回归 | `PYTHONPATH=. python3 tests/selftest_agent.py` | 确定性夹具端到端 (22 项断言) |
+
 ```bash
 # 生成日志夹具 (真实文件, 供运行时产生流)
 bash tests/make_fixtures.sh /tmp/lt_logs
-
-# 模块级冒烟测试 (无需终端)
-PYTHONPATH=. python3 tests/smoke_test.py
 ```
 
 在真实终端里跑一次看交互效果:

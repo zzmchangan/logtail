@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from . import __version__
@@ -153,6 +154,12 @@ def main(argv=None) -> int:
         except RulePatternError as exc:
             print(f"logtail: --match 规则错误: {exc}", file=sys.stderr)
             return 2
+        except BrokenPipeError:
+            # 下游 (head/grep) 提前关闭管道: 静默退出, 不打 traceback。
+            # 把 stdout 指到 devnull, 避免 Python 关闭缓冲时再抛一次。
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+            return 0
 
     return tui_main(cfg)
 
