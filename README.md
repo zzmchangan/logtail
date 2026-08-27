@@ -123,7 +123,7 @@ correlation_keys:
 
 | 层 | 参数 | 决定什么 |
 |---|---|---|
-| ① 采集量 | `--since`(**优先**, 按时间戳定位起点, 8MB/文件上限) / `--history` / `--lines`(无 since 时) | **读多少**进内存 |
+| ① 采集量 | `--since`(**优先**, 时间戳二分定位、覆盖全文件; 二分失败退化尾部 8MB 扫描并 stderr 警告) / `--history` / `--lines`(无 since 时) | **读多少**进内存 |
 | ② 过滤 | `--match`/`--exclude`/`--level`/`--focus`/`--correlate` | 读到的行里**留哪些** |
 | ③ 输出量 | `--lines` | **打出几条** (仅正文条数上限; `--count` 不受它限) |
 
@@ -144,7 +144,7 @@ correlation_keys:
 - **`--json` 契约**: 每行一个 JSON 对象 `{"ts","ts_seconds","source","level","text","seq"}`。`ts` 供人读/对齐窗口, `ts_seconds` 为 epoch 秒供排序比较, `seq` 供确定性重放; `--count`/`--summary` 不受影响(仍只在各自位置)。
 - **`--summary` 锚点**: JSON 里含 `latest_ts`——`--since` 实际锚定的"最新一条日志时间戳"。agent 据它自校验"这个窗口对齐的是哪个时间", 尤其注意 GM 调时间(multiTimeOffset)会让日志时间≠墙钟, 别用墙钟去对。
 - **`--diagnose`**: 独立健康检查(不 tail), JSON 到 stdout。**拿到空结果先跑它**: 若某源 `discovered:false`/`dx_error` 非空 → 源没被找到, 别下"无错误"结论。
-- **`--since` 的优先级与上限**: 给了 `--since` 就**按时间戳定位采集起点**(`--lines`/`--history` 不再决定回溯量); 采集回读上限 **8MB/文件**, 超过时 stderr 会打 `warning: ... 超过回读上限 8MB`——窗口前部旧行读不到, `--match` 可能漏掉窗口边缘命中。超大文件要完整覆盖, 用 glob 源 + `--lines 100000`。
+- **`--since` 的优先级与定位**: 给了 `--since` 就**按时间戳定位采集起点**(`--lines`/`--history` 不再决定回溯量)。主路径是**时间戳二分定位**——日志按行追加、时间戳单调不减时,几十次 seek 即可定位任意久远窗口的起点,**不受文件大小限制**(474MB 也能回看 2h)。二分失败(无时间戳行/非单调/超长行)才退化到**尾部 8MB 扫描兜底**,此时 stderr 打 `warning: ... 退化为尾部 8MB 扫描`——窗口前部旧行读不到,`--match` 可能漏掉窗口边缘命中。
 - **`--count` 的统计范围**: 统计**全部读取量**(受上面 8MB cap 影响), **不受 `--lines` 限制**——`--lines` 只是正文输出条数上限。即 `count = 窗口内真实命中数`, `lines = 你这次想看几条`。
 - **`--date` 的生效范围**: 只对含 `{date}`/`{YYYY}` 等占位符的源生效(path/pattern/**dx 命令里写了 `{date}`**)。dx 命令不含占位符时给 `--date` 无效(仍读当天), stderr 会打 warning 明示。dx 源看历史某天需 dx 命令本身支持日期参数。
 - **实时日志做对照实验不可靠**: `--since` 锚定"最新一条日志时间戳", 每次调用间隔几秒窗口就漂移。确定性验证: `--match X --lines 100000 --count` 固定大读取量, 或 glob 源 + `--date` 锁历史。

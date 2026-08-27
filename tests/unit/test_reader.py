@@ -85,13 +85,9 @@ class TestTailSemantics(FollowerCase):
 
     def test_since_window_only_recent(self):
         now = time.time()
-        old = now - 3600
-        lines = [f"[{time.strftime('%H:%M:%S', time.localtime(old))}] old line",
-                 f"[{time.strftime('%H:%M:%S', time.localtime(now))}] recent line"]
-        # 用完整日期形式保证 epoch 精确
         import datetime
         fmt = "%Y-%m-%d %H:%M:%S"
-        lines = [f"[{datetime.datetime.fromtimestamp(old).strftime(fmt)}] old line",
+        lines = [f"[{datetime.datetime.fromtimestamp(now - 3600).strftime(fmt)}] old line",
                  f"[{datetime.datetime.fromtimestamp(now).strftime(fmt)}] recent line"]
         write(self.path, "\n".join(lines) + "\n")
         f = self.run_follower(since=60)
@@ -101,6 +97,46 @@ class TestTailSemantics(FollowerCase):
             self.assertEqual([l.text for l in got], ["recent line"])
         finally:
             f.stop()
+
+    def test_since_garbage_file_falls_back(self):
+        """全部行无时间戳: 二分必然失败 -> 兜底尾扫; 小文件从头读, 全部吐出."""
+        write(self.path, "garbage one\ngarbage two\ngarbage three\n")
+        f = self.run_follower(since=60)
+        f.start()
+        try:
+            got = collect(f, want=3, timeout=3)
+            self.assertEqual([l.text for l in got],
+                             ["garbage one", "garbage two", "garbage three"])
+        finally:
+            f.stop()
+
+    def test_binary_since_offset_unit(self):
+        """二分定位的纯函数行为: 各档 cutoff 都落在正确的行首."""
+        from logtail.reader import _binary_since_offset
+        now = time.time()
+        import datetime
+        fmt = "%Y-%m-%d %H:%M:%S"
+        times = [now - 10000, now - 5000, now - 1000, now - 100]
+        with open(self.path, "w") as f:
+            for i, t in enumerate(times):
+                f.write(f"[{datetime.datetime.fromtimestamp(t).strftime(fmt)}] line{i}\n")
+        size = os.path.getsize(self.path)
+        offsets = []
+        with open(self.path, "rb") as fh:
+            for cut in (now - 20000, now - 6000, now - 2000, now - 150):
+                offsets.append(_binary_since_offset(fh, size, cut))
+        self.assertTrue(all(o is not None for o in offsets))
+        # 各 offset 后第一行正文应分别是 line0..line3
+        with open(self.path, "rb") as fh:
+            texts = []
+            for off in offsets:
+                fh.seek(off)
+                texts.append(fh.readline().decode().split("] ", 1)[1].strip())
+        self.assertEqual(texts, ["line0", "line1", "line2", "line3"])
+        # cutoff 早于全部 -> offset 0; 晚于全部 -> size (无行合格)
+        with open(self.path, "rb") as fh:
+            self.assertEqual(_binary_since_offset(fh, size, now - 99999), 0)
+            self.assertEqual(_binary_since_offset(fh, size, now + 99999), size)
 
     def test_appended_lines_stream(self):
         write(self.path, "")

@@ -26,7 +26,68 @@ from .timeparse import extract_timestamp
 from .levelparse import parse_level
 
 POLL_INTERVAL = 0.2          # 轮询间隔 (秒)
-SINCE_CAP = 8_000_000        # --since 回读上限 (8MB, 足够覆盖启动窗口而不过度耗内存)
+SINCE_CAP = 8_000_000        # --since 兜底回读上限 (8MB; 二分定位失败时才用)
+BS_PROBE_BYTES = 64 * 1024   # 二分探针的单次读取块
+
+
+def _probe_line(fh, pos: int, size: int):
+    """返回包含字节 pos 的那一行 (line_start, raw_bytes); 超长行/读不到返回 None."""
+    back = min(pos, BS_PROBE_BYTES)
+    fh.seek(pos - back)
+    block = fh.read(back + BS_PROBE_BYTES)
+    if not block:
+        return None
+    base = pos - back                     # block 覆盖的文件起点
+    pos_in = pos - base
+    nl_b = block.rfind(b"\n", 0, pos_in)
+    line_start = base if nl_b < 0 else base + nl_b + 1
+    nl_e = block.find(b"\n", pos_in)
+    if nl_e < 0:
+        # 行尾不在块内: 块已到 EOF 则是最后一行; 否则视为超长行, 放弃二分
+        if base + len(block) >= size:
+            raw = block[line_start - base:]
+        else:
+            return None
+    else:
+        raw = block[line_start - base:nl_e]
+    if not raw:
+        return None
+    return line_start, raw
+
+
+def _binary_since_offset(fh, size: int, cutoff: float):
+    """时间戳二分定位: 第一条 ts >= cutoff 行的字节偏移; 无法二分返回 None.
+
+    前提: 日志按行顺序追加、时间戳单调不减 (单逻辑线程写日志的常见形态)。
+    每次探针定位"包含 mid 的那一行"并解析时间戳:
+      ts >= cutoff -> 答案(第一条合格行首) <= 该行行首 -> hi 收缩;
+      ts <  cutoff -> 答案在该行之后 -> lo 前进。
+    收敛后做边界校验(lo 前一行应 < cutoff), 非单调/无时间戳/超长行都返回 None,
+    由调用方退化到尾部 8MB 扫描兜底 —— 宁可多读不漏行。
+    """
+    lo, hi = 0, size          # 答案(行首偏移) ∈ [lo, hi]
+    while lo < hi:
+        mid = (lo + hi) // 2
+        probe = _probe_line(fh, mid, size)
+        if probe is None:
+            return None
+        line_start, raw = probe
+        hit = extract_timestamp(raw.decode("utf-8", errors="replace"))
+        if hit is None:
+            return None
+        if hit[0][0] >= cutoff:
+            hi = line_start       # line_start <= mid < hi, 必有进展
+        else:
+            lo = line_start + len(raw) + 1   # 越过该行, > mid >= lo, 必有进展
+    # 边界校验: lo 前一行应早于 cutoff; 若它也 >= cutoff 说明时间戳非单调,
+    # 二分结果不可信, 交兜底 (多读由内存过滤剔除, 不会漏)。
+    if lo > 0:
+        prev = _probe_line(fh, lo - 1, size)
+        if prev is not None:
+            hit = extract_timestamp(prev[1].decode("utf-8", errors="replace"))
+            if hit is not None and hit[0][0] >= cutoff:
+                return None
+    return lo
 
 
 def _last_timestamp(path: str) -> Optional[float]:
@@ -205,19 +266,32 @@ class _SourceWorker(threading.Thread):
         """返回 '时间戳 >= 最近 since 秒' 第一条日志的字节偏移, 作为 offset.
 
         --since 5m 时用于排查服务器启动报错: 日志文件已很大, 想直接回看到
-        "最近 5 分钟"那一段。从文件末尾向前扫, 找第一条时间戳落在窗口内的行。
-        受回读上限 (SINCE_CAP) 约束; 超限或窗内有行无法解析时退化为从头/末尾。
-        超过上限时向 stderr 明示"窗口可能不完整", 而非静默截断 (否则用户会
-        以为 --since 2h 真的覆盖了两小时)。
+        "最近 5 分钟"那一段。
+
+        主路径: 时间戳二分定位 —— 日志按行追加、时间戳单调不减时,
+        几十次 seek 即可定位任意久远窗口的起点, 不受文件大小限制。
+        兜底: 二分失败(无时间戳行/非单调/超长行)退化到尾部 SINCE_CAP 扫描,
+        超过上限时向 stderr 明示"窗口可能不完整", 而非静默截断。
         """
         secs = self._owner.since
         if secs <= 0 or size == 0:
             return 0
         cutoff = time.time() - secs
+
+        try:
+            with open(path, "rb") as fh:
+                off = _binary_since_offset(fh, size, cutoff)
+        except OSError:
+            off = None
+        if off is not None:
+            return off
+
+        # ---- 兜底: 尾部固定窗口扫描 (旧行为) ----
         cap = min(size, SINCE_CAP)
         read_start = size - cap
         if read_start > 0:
-            print(f"logtail: warning: {path} 超过回读上限 8MB, --since 窗口可能不完整 "
+            print(f"logtail: warning: {path} 无法二分定位(时间戳缺失/非单调), "
+                  f"退化为尾部 8MB 扫描, --since 窗口可能不完整 "
                   f"(从最近 8MB 起读, 更早的行看不到)", file=sys.stderr)
         try:
             with open(path, "rb") as fh:

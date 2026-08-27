@@ -253,12 +253,11 @@ class TestFilteringMatrix(CliCase):
         self.assertIn("dx", r.stderr)
 
     def test_since_cap_warns_on_large_file(self):
-        """坑2回归: 文件超过 SINCE_CAP(8MB) 时 --since 窗口可能截断, 必须明示."""
-        import logtail.reader as rdr
+        """坑2回归(兜底路径): 二分失败(无时间戳行)时退化为尾部 8MB 扫描, 必须明示."""
         big = os.path.join(self.dir, "big.log")
         with open(big, "w") as f:
-            # ~9MB 旧行 (远超 8MB cap), 最后两行是"最近"时间戳
-            old = "[2026-08-27 00:00:00] old padding line aaaaaaaaaa\n"
+            # ~9MB 无时间戳垃圾行 -> 二分探针必然失败 -> 走 8MB 尾扫兜底
+            old = "no timestamp garbage padding line aaaaaaaaaa\n"
             f.write(old * (9 * 1024 * 1024 // len(old.encode()) + 1))
             f.write("[2026-08-27 23:59:59] recent tail one\n")
             f.write("[2026-08-27 23:59:59] recent tail two\n")
@@ -269,8 +268,39 @@ class TestFilteringMatrix(CliCase):
         r = self.cli("--agent", "--config", cfg2, "--since", "1h",
                      "--wait", "1.5", "--lines", "100")
         self.assertEqual(r.returncode, 0)
-        self.assertIn("8MB", r.stderr)                               # 触顶警告
+        self.assertIn("8MB", r.stderr)                               # 兜底触顶警告
         self.assertIn("recent tail", r.stdout)                       # 尾部新行仍在
+
+    def test_since_binary_covers_window_beyond_8mb(self):
+        """二分定位回归: >8MB 文件上, --since 窗口起点落在 8MB 尾巴之外时也必须读到."""
+        import time as _t
+        now = _t.time()
+        big = os.path.join(self.dir, "bin.log")
+        early_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 7000))
+        late_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 100))
+        with open(big, "w") as f:
+            # 先 1MB "早窗口"行(ts=now-7000s, 在 since=2h 窗口内但超出 8MB 尾巴),
+            # 再 8.5MB 近期填充行(ts=now-100s)
+            early = f"[{early_ts}] earlyline marker\n"
+            f.write(early * (1024 * 1024 // len(early.encode()) + 1))
+            late = f"[{late_ts}] latefill padding\n"
+            f.write(late * (int(8.5 * 1024 * 1024) // len(late.encode()) + 1))
+        cfg2 = os.path.join(self.dir, "bin.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: big\n    path: {self.dir}\n"
+                    f'    pattern: "bin.log"\nblacklist: []\n')
+        r = self.cli("--agent", "--config", cfg2, "--since", "2h",
+                     "--wait", "3", "--lines", "100000")
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("8MB", r.stderr)                            # 二分成功不打触顶警告
+        # 旧行为(8MB 尾扫): early 区在尾巴之外 -> 漏; 二分定位: 必须命中
+        # (--lines 是输出上限会截掉窗口头部, 故用 --count 断言真实读取覆盖)
+        n = self.cli("--agent", "--config", cfg2, "--since", "2h",
+                     "--wait", "3", "--match", "earlyline", "--count")
+        self.assertGreater(int(n.stdout.strip()), 0)
+        m = self.cli("--agent", "--config", cfg2, "--since", "2h",
+                     "--wait", "3", "--match", "latefill", "--count")
+        self.assertGreater(int(m.stdout.strip()), 0)
 
 
 class TestMonitor(CliCase):
