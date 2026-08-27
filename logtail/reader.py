@@ -216,6 +216,8 @@ class _SourceWorker(threading.Thread):
             "files": len(self._files),   # 当前跟踪的文件数
             "discovered": self._ever_found,
             "dx_error": self._dx_error,
+            # 该源的历史积压是否读完 (分源读全性: 定位"哪个源没读完")
+            "backlog_ready": self.backlog_ready(),
         }
 
     def _read_file(self, path: str) -> None:

@@ -24,17 +24,18 @@ def normalize(raw: str) -> str:
     return v
 
 
-# 内置预设 (开箱即用; 未定义 key 时才用, 配置里同名 key 优先)
+# 内置预设 (开箱即用; 未定义 key 时才用, 配置里同名 key 优先)。
+# 所有模式都带 JSON 引号容错 (?") —— 微服务侧是 "RoleId":"123" 写法。
 _PRESETS: Dict[str, List[str]] = {
     "player": [
-        r"player[:=]\s*(\d+)",
-        r"roleid[:=]\s*(\d+)",
-        r"guid[:=]\s*(\d+)",
+        r'"?player"?\s*[:=]\s*"?(\d+)',
+        r'"?roleid"?\s*[:=]\s*"?(\d+)',
+        r'"?guid"?\s*[:=]\s*"?(\d+)',
     ],
     # 副本/场景实例 id: 实测跨 guild+scene+scenemgr 且区分度高 (discover-keys 发现)。
     # 三种写法都要认: scene: (guild) / sceneId: (scene) / scene_id= (通用)
     "scene": [
-        r"\bscene(?:_?id)?[:=]\s*(\w+)",
+        r'"?scene(?:_?id)?"?\s*[:=]\s*"?(\w+)',
     ],
     # 候选: 跨服调用/会话 token (如 [s=16bd7af3&c=413378]); 唯一性需用 self-report 验证
     "session": [

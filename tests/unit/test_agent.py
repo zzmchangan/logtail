@@ -236,6 +236,25 @@ class TestDumpEdgeCases(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("未完成", err.getvalue())
 
+    def test_backlog_timeout_names_source(self):
+        """反馈#1: 未读完要能定位到具体源 —— 警告点名 + summary 分源 backlog_ready."""
+        d = tempfile.mkdtemp(prefix="lt_backlog2_")
+        log = os.path.join(d, "s.log")
+        with open(log, "w") as f:
+            f.write("[2026-08-27 10:00:00] hello\n")
+        cfg = Config(sources=[SourceConfig(
+            "slowsrc", "", "", dx=f"bash -c 'sleep 2 && echo {log}'")])
+        cfg.history = 10
+        buf, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(err):
+            rc = dump(cfg, None, 50, wait=0.5, hard_cap=0.8, summary=True)
+        self.assertEqual(rc, 0)
+        out = err.getvalue()
+        self.assertIn("slowsrc", out)                               # 警告点名慢源
+        d = json.loads(out.strip().splitlines()[-1])
+        self.assertFalse(d["sources"][0]["backlog_ready"])         # 分源自报 False
+        self.assertFalse(d["backlog_complete"])
+
 
 if __name__ == "__main__":
     unittest.main()

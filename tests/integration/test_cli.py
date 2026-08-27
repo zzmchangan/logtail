@@ -404,6 +404,25 @@ class TestFilteringMatrix(CliCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("ms detail", r.stdout)                       # [Debug] 行放行
 
+    def test_focus_multiple_sources(self):
+        """反馈#3: --focus 逗号分隔多源 (clientgate+login 同看一轮搞定)."""
+        r = self.A("--focus", "scene,guild")
+        self.assertEqual(self.sources_of(r.stdout), {"scene", "guild"})
+        r = self.A("--focus", "scene")
+        self.assertEqual(self.sources_of(r.stdout), {"scene"})
+        # 多源里混入未知名 -> exit 2 (列出可用名)
+        r = self.A("--focus", "scene,nope")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("guild", r.stderr)
+
+    def test_summary_per_source_backlog(self):
+        """反馈#1: --summary 分源报 backlog_ready, 定位"哪个源没读完"."""
+        r = self.A("--summary")
+        d = json.loads(r.stderr.strip().splitlines()[-1])
+        for s in d["sources"]:
+            self.assertIn("backlog_ready", s)
+            self.assertTrue(s["backlog_ready"])                    # 健康夹具必读完
+
     def test_summary_backlog_complete_field(self):
         """强建议#2: --summary 必须自报读全性 (backlog_complete)."""
         r = self.A("--summary")

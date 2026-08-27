@@ -90,9 +90,9 @@ keywords:
 correlation_keys:
   - name: player
     extract:
-      - "Guid[:=] *(\\d+)"          # [Player Guid:1276679028765 ...] (已实测可抽到)
-      - "roleId[:=] *(\\d+)"
-      - "player[:=] *(\\d+)"
+      - '"?Guid"?[:=] *"?(\d+)'       # [Player Guid:1276679028765 ...] 与 JSON "Guid":"123" 都认
+      - '"?roleId"?[:=] *"?(\d+)'
+      - '"?player"?[:=] *"?(\d+)' 
   # 注意: s=xxx&c=xxx token 实测窗口内每行都有 (lines_with_key==lines_total),
   # 是全服常量、无区分度, 不作关联键; 若确认有请求级唯一 token 再加。
   #

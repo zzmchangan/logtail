@@ -49,7 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  --wait(dump) 是backlog完成后实时跟随的时长(约1s无新行提前返回); 历史窗口读取\n"
             "  由信号驱动等完(30s硬上限), 超时 stderr 警告'读取未完成'——空结果勿当结论。\n"
             "  --ctx-same N 仅 agent+match(同进程上下文, 与 -C 全局互补); --diagnose 独立健康检查(不 tail)。\n"
-            "  --focus <源名> 单源聚焦(按配置源名精确匹配, 未知/typo exit 2 并列出可用名)。\n"
+            "  --focus <源名[,源名...]> 源聚焦(精确匹配, 多源逗号分隔; 未知/typo exit 2 列出可用名);\n"
+            "  --summary 分源报 backlog_ready(定位哪个源没读完), 预设关联键兼容 JSON 引号写法。\n"
             "  管道纪律: | head 超量截断会偏离 exit 0/2 契约(SIGPIPE); 截断用 --lines N, 判 $? 前别接 head。\n"
             "  --correlate key=value 关联键(抽取+归一化跨源对齐; 未定义 key 回退字面子串);\n"
             "  --summary 的 correlate 自报 lines_with_key 用于判断正则是否写歪/key 是否有区分度。\n"
@@ -88,7 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--trace", default=None,
                    help="实体追踪: 只显示所有源中含该词的干净命中行 (无邻居行); 交互 /trace 与 agent 均可用")
     p.add_argument("--focus", default=None,
-                   help="单源聚焦: 只输出指定来源 (name) 的行, 如 --focus scene; dx/glob 源均有效")
+                   help="源聚焦: 只输出指定来源(name)的行, 支持逗号/空格分隔多源, "
+                        "如 --focus scene 或 --focus clientgate,login; dx/glob 源均有效")
     p.add_argument("--correlate", default=None,
                    help="按关联键对齐: 跨源只留抽出该 id 的行, 如 --correlate player=123; "
                         "key 在 config correlation_keys/预设里=抽取+归一化, 未定义=回退字面 --trace")
@@ -176,13 +178,19 @@ def main(argv=None) -> int:
             cfg.level = args.level.upper()
         if args.trace:
             cfg.trace = args.trace
-        # fail-fast: --focus 按配置源名精确匹配; typo/大小写错若静默 0 行,
-        # 会伪装成"没日志"(第三场演练抓出的假阴性盲区)。列出可用名便于自查。
-        if args.focus and args.focus not in [s.name for s in cfg.sources]:
-            names = ", ".join(s.name for s in cfg.sources)
-            print(f"logtail: --focus 无效: {args.focus!r} 不在配置的日志源里 "
-                  f"(精确匹配, 大小写敏感; 可用: {names})", file=sys.stderr)
-            return 2
+        # fail-fast: --focus 按配置源名精确匹配(支持逗号/空格分隔多源);
+        # typo/大小写错若静默 0 行, 会伪装成"没日志"。列出可用名便于自查。
+        if args.focus:
+            import re as _re
+            names = {s.name for s in cfg.sources}
+            wanted = [w for w in _re.split(r"[,\s]+", args.focus.strip()) if w]
+            bad = [w for w in wanted if w not in names]
+            if bad:
+                print(f"logtail: --focus 无效: {', '.join(bad)} 不在配置的日志源里 "
+                      f"(精确匹配, 大小写敏感; 可用: {', '.join(sorted(names))})",
+                      file=sys.stderr)
+                return 2
+            args.focus = wanted[0] if len(wanted) == 1 else set(wanted)
         if args.case_sensitive:
             cfg.case_sensitive = True
         if args.anchor:

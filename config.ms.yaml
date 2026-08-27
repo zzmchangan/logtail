@@ -22,6 +22,16 @@ log_sources:
   #   path: /data/vm-ro3-deploys/log/ms/BarService
   #   pattern: "bar-service-*/bar_service.log"
 
+  # 登录/认证链路排查(高频场景): clientgate(连接/绑定/转发) + login(verifyWithoutSdk/getRoleInfo/token)。
+  # 按需取消注释; 与 scene 等大服联查时临时加 --source, 或改用主配置 + --blacklist-del DEBUG + --source 这两条。
+  # ⚠️ clientgate 单文件可达 173MB+, 宽窗(--since >5m)易顶 30s backlog 硬上限, 建议窄窗 + --keep head。
+  # - name: login
+  #   path: /data/vm-ro3-deploys/log/ms/LoginService
+  #   pattern: "login-service-*/login_service.log"
+  # - name: clientgate
+  #   path: /data/vm-ro3-deploys/log/ms/ClientGateService
+  #   pattern: "client-gate-service-*/client_gate_service.log"
+
 # 微服务日志为 Debug 级? 这里刻意不放 "DEBUG", 否则滤掉全部。
 blacklist:
   - "heartbeat"

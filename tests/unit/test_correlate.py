@@ -62,6 +62,20 @@ class TestPresets(unittest.TestCase):
         self.assertEqual(ck.extract1("scene_id=45", "scene"), "45")
         self.assertIsNone(ck.extract1("no scene here", "scene"))
 
+    def test_presets_json_quoted_forms(self):
+        """⭐ 微服务 JSON 写法容错: "RoleId":"123" / "Guid":"456" / "sceneId":"789"."""
+        ck = CorrelationKeys()
+        self.assertEqual(ck.extract1('"RoleId":"1276679028765"', "player"),
+                         "1276679028765")
+        self.assertEqual(ck.extract1('"Guid":"456" tail', "player"), "456")
+        self.assertEqual(ck.extract1('"player":"789"', "player"), "789")
+        # 原有裸写法不受影响
+        self.assertEqual(ck.extract1("roleId: 100 x", "player"), "100")
+        self.assertEqual(ck.extract1("player=200", "player"), "200")
+        # scene 的 JSON 形式
+        self.assertEqual(ck.extract1('"sceneId":"273224638266229618"', "scene"),
+                         "273224638266229618")
+
     def test_config_overrides_preset(self):
         ck = CorrelationKeys([{"name": "player", "extract": [r"uid=(\d+)"]}])
         self.assertEqual(ck.extract1("uid=9", "player"), "9")

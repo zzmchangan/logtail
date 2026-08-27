@@ -83,19 +83,35 @@ def _build_blk(cfg: Config) -> RuleSet:
 
 
 def _apply(ln, blk: RuleSet, matchers: List[Rule],
-           excludes: List[Rule] = None, focus: Optional[str] = None) -> bool:
-    """返回该行是否应输出 (黑名单+级别剔除后, matchers 任一命中, 不命中 excludes, 且匹配 focus)."""
+           excludes: List[Rule] = None, focus=None) -> bool:
+    """返回该行是否应输出 (黑名单+级别剔除后, matchers 任一命中, 不命中 excludes, 且匹配 focus).
+
+    focus 为单个源名(str)或多个源名(set) —— --focus 支持逗号分隔多源。
+    """
     if blk.blocked(ln.text):
         return False
     if not blk.level_ok(ln.level):
         return False
-    if focus and ln.source != focus:
-        return False
+    if focus:
+        if isinstance(focus, str):
+            if ln.source != focus:
+                return False
+        elif ln.source not in focus:
+            return False
     if matchers and not any(r.matches(ln.text) for r in matchers):
         return False
     if excludes and any(r.matches(ln.text) for r in excludes):
         return False
     return True
+
+
+def _focus_ok(source: str, focus) -> bool:
+    """focus 为 None(不筛)/单源名(str)/多源名(set) 时, source 是否通过."""
+    if not focus:
+        return True
+    if isinstance(focus, str):
+        return source == focus
+    return source in focus
 
 
 def _provenance(probe: List[dict], summary: bool, out_count: int,
@@ -217,7 +233,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
             for ln in batch:
                 # 黑名单 + 级别剔除 + (可选)单源聚焦 (match 在最后输出时再判, 这里先收集)
                 if (not blk.blocked(ln.text) and blk.level_ok(ln.level)
-                        and (not focus or ln.source == focus)):
+                        and _focus_ok(ln.source, focus)):
                     seen.append(ln)
             # backlog 信号: 各源历史窗口读完 -> 进入实时跟随期 (给 wait 秒收新行)。
             # 若中途又发现新文件 (dx 后到), 回到 backlog 阶段等它读完。
@@ -240,9 +256,12 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         follower.stop()
 
     if not backlog_done:
-        # 硬上限内历史窗口没读完: 结果不完备, 必须明示而非伪装成"没有"
+        # 硬上限内历史窗口没读完: 结果不完备, 必须明示且定位到具体源
+        not_ready = [s.get("source", "?") for s in probe
+                     if s.get("backlog_ready") is False]
         print(f"logtail: warning: 历史窗口读取未完成 ({hard_cap:g}s 硬上限内 backlog 未读完), "
-              f"结果可能不完整 —— 检查源是否极慢/文件是否超大", file=sys.stderr)
+              f"结果可能不完整 —— 未读完的源: {', '.join(not_ready) or '(未知)'}; "
+              f"检查该源是否极慢/文件是否超大, 或拆小窗口重查", file=sys.stderr)
 
     seen.sort(key=lambda l: (l.ts_key, l.seq))
 
@@ -367,13 +386,13 @@ def _split_correlate(text: Optional[str]):
 # 候选关联键发现用的内置正则集 (大小写不敏感; 配置 correlation_keys 同名覆盖)。
 # 目的不是猜哪个 id 是"对的", 而是把每个候选的区分度/跨源分布摆出来让使用者挑。
 _DISCOVER_CANDIDATES = [
-    ("player", [r"guid[:=] *(\d+)", r"roleid[:=] *(\d+)", r"player[:=] *(\d+)"]),
+    ("player", [r'"?guid"?[:=] *"?(\d+)', r'"?roleid"?[:=] *"?(\d+)', r'"?player"?[:=] *"?(\d+)']),
     ("session", [r"[?&\s]s=([0-9a-zA-Z]+)"]),
     ("uid", [r"\buid[:=] *(\w+)"]),
     ("request", [r"\brequest_?id[:=] *(\w+)", r"\breqid[:=] *(\w+)"]),
     ("call", [r"\bcall_?id[:=] *(\w+)"]),
     ("order", [r"\border_?id[:=] *(\w+)"]),
-    ("scene", [r"\bscene(?:_?id)?[:=] *(\w+)"]),
+    ("scene", [r'"?scene(?:_?id)?"?[:=] *"?(\w+)']),
     ("instance", [r"\binstance_?id[:=] *(\w+)"]),
 ]
 
