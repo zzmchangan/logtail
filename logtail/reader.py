@@ -28,6 +28,24 @@ POLL_INTERVAL = 0.2          # 轮询间隔 (秒)
 SINCE_CAP = 8_000_000        # --since 回读上限 (8MB, 足够覆盖启动窗口而不过度耗内存)
 
 
+def _last_timestamp(path: str) -> Optional[float]:
+    """读文件末尾非空行的时间戳 (epoch 秒), 失败返回 None (供 --diagnose 用)."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            read_start = max(0, size - 4096)
+            fh.seek(read_start)
+            data = fh.read()
+    except OSError:
+        return None
+    for raw in reversed([l for l in data.split(b"\n") if l]):
+        hit = extract_timestamp(raw.decode("utf-8", errors="replace"))
+        if hit:
+            return hit[0][0]
+    return None
+
+
 class _FileFollower:
     """单个文件的跟踪状态."""
 
@@ -300,6 +318,29 @@ class LogFollower:
     def probe(self) -> List[dict]:
         """返回各源的发现诊断 (agent 用, 区分"没日志"与"源未发现")."""
         return [w.probe_status() for w in self._workers]
+
+    def diagnose(self) -> List[dict]:
+        """只做发现探测, 不启动 tail 线程: 每源文件数 + dx 状态 + 最后日志时间戳.
+
+        供 --diagnose / agent 先验证"源到底发现没", 再信 "0 命中"; 不读正文、退出即返回。
+        """
+        out = []
+        for src in self.sources:
+            w = _SourceWorker(src, self)      # 不 start, 仅复用路径发现逻辑
+            paths = w._current_paths()
+            latest = None
+            for p in paths:
+                t = _last_timestamp(p)
+                if t is not None and (latest is None or t > latest):
+                    latest = t
+            out.append({
+                "source": src.name,
+                "files": len(paths),
+                "discovered": bool(paths),
+                "dx_error": w._dx_error,
+                "latest_ts": latest,
+            })
+        return out
 
 
 class _UnboundedQueue:

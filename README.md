@@ -74,6 +74,15 @@ python -m logtail --agent --config config.yaml --trace player=123
 # 多词(OR) + 排除: 命中 timeout 或 crash, 且排除 heartbeat
 python -m logtail --agent --config config.yaml --match 'timeout crash' --exclude heartbeat
 
+# 同源上下文: 命中行连带"同进程"前后各 2 行 (跳过其它进程, 看单进程因果链)
+python -m logtail --agent --config config.yaml --match ERROR --ctx-same 2 --since 5m
+
+# 结构化输出 (NDJSON): 每行一个 JSON 对象, 供编程级加工 (仍走同一过滤管线)
+python -m logtail --agent --config config.yaml --match ERROR --json --lines 20
+
+# 健康检查: 只探测源是否被发现, 不 tail 不读正文 (agent 先验证再信 "0 命中")
+python -m logtail --diagnose --config config.yaml
+
 # 持续监控: 把过滤后的日志持续打 stdout (Ctrl+C 停止)
 python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 ```
@@ -82,6 +91,9 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 - `-C N` 结合 `--match`: 每条命中行连带**前后各 N 行**。**`-C 5s`/`-C 1m` 按时间窗只在交互版可用** (`/context 5s` 或 TUI 内 `-C 5s`); agent 的 `-C` 只接受**行数**。
 - `--since 5m`: 只看最近一段时间(按日志自带时间戳), 跳过早期杂音; 以最新日志为参考, 历史日 `--date` 也能用。
 - `--level ERROR`: 只保留 >= 该级别的行; `--trace <词>`: 跨源纯净命中行(无邻居)。
+- `--ctx-same N`: **同源上下文**——命中行连同"同进程"前后各 N 行 (跳过其它进程)。与 `-C`(全局时间邻居)互补: `-C` 看系统面, `--ctx-same` 看单进程因果。
+- `--json`: 每行输出一个 JSON 对象 (`ts`/`ts_seconds`/`source`/`level`/`text`/`seq`), 供编程级加工; 仍走同一套过滤管线。
+- `--diagnose`: **只做发现健康检查**(不 tail 不读正文), 输出 JSON: 每源 `files`/`discovered`/`dx_error`/`latest_ts`。
 - `--count`: 只输出命中行数 (经 黑名单/级别/match/exclude 过滤后), 快速判断这段时是否爆发。
 - 黑名单**始终生效**; 不带 `--match`/`-C` 时输出黑名单过滤后的全部最近 N 行。
 - Agent 修 bug 的用法: 先 `--match` 收窄到错误行 → `-C` 补上下文 → `--since` 限时间段 → `re:` 正则再收窄 → 拿到极少量却完整的线索。
@@ -96,6 +108,9 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 - **`--lines` vs `--history`**: agent 收集量 = `max(lines, history)`, 输出取最后 `lines` 条。
 - **`--since` (dump)**: 以**窗口内最新一条日志**的时间戳为参考 (`最新 - since`), 而非 wall-clock —— 所以配合历史 `--date` 扫描也不会被清空。
 - **`--summary`**: 把"发现诊断"(JSON)打到 **stderr**。**空结果/`--count 0` 时先看 stderr**: 有 `warning:` 或 JSON 里 `total_files==0` / 某源 `discovered:false` / `dx_error` 非空 → 是"**源没被发现**", 不是"没错误" (避免 'exit 0 + 空输出' 假阴性); 都正常 `files>0` 才可信。stdout 仍只放日志/计数。
+- **`--json` 契约**: 每行一个 JSON 对象 `{"ts","ts_seconds","source","level","text","seq"}`。`ts` 供人读/对齐窗口, `ts_seconds` 为 epoch 秒供排序比较, `seq` 供确定性重放; `--count`/`--summary` 不受影响(仍只在各自位置)。
+- **`--summary` 锚点**: JSON 里含 `latest_ts`——`--since` 实际锚定的"最新一条日志时间戳"。agent 据它自校验"这个窗口对齐的是哪个时间", 尤其注意 GM 调时间(multiTimeOffset)会让日志时间≠墙钟, 别用墙钟去对。
+- **`--diagnose`**: 独立健康检查(不 tail), JSON 到 stdout。**拿到空结果先跑它**: 若某源 `discovered:false`/`dx_error` 非空 → 源没被找到, 别下"无错误"结论。
 
 ## 交互命令
 | 命令 | 缩写 | 作用 |

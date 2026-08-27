@@ -14,6 +14,8 @@ import json
 import re
 import sys
 import time
+from bisect import bisect_left
+from collections import defaultdict
 from typing import List, Optional
 
 from .config import Config
@@ -27,6 +29,26 @@ def format_line(ln) -> str:
     """把一条 LogLine 格式化为带前缀的单行 (与交互版一致, 无颜色转义)."""
     ts = ln.time_str or fmt_hhmmss(ln.ts_seconds)
     return f"{ts} {ln.source:<12} {ln.text}"
+
+
+def _json_line(ln) -> str:
+    """把一条 LogLine 序列化成单个 JSON 对象 (NDJSON), 供 agent 编程级加工.
+
+    含 ts/ts_seconds(epoch)/source/level/text/seq, 便于按字段聚合与确定性重放。
+    """
+    return json.dumps({
+        "ts": ln.time_str or fmt_hhmmss(ln.ts_seconds),
+        "ts_seconds": ln.ts_seconds,
+        "source": ln.source,
+        "level": ln.level,
+        "text": ln.text,
+        "seq": ln.seq,
+    }, ensure_ascii=False)
+
+
+def _emit(ln, as_json: bool) -> str:
+    """按 as_json 选择输出格式: 定宽文本 (默认) 或单行 JSON."""
+    return _json_line(ln) if as_json else format_line(ln)
 
 
 def _build_match_rules(patterns: List[str]) -> List[Rule]:
@@ -68,13 +90,14 @@ def _apply(ln, blk: RuleSet, matchers: List[Rule],
     return True
 
 
-def _provenance(probe: List[dict], summary: bool, out_count: int) -> None:
+def _provenance(probe: List[dict], summary: bool, out_count: int,
+                latest_ts: Optional[float] = None) -> None:
     """把"发现诊断"写到 stderr, 使"空输出/0命中"能与"源压根没发现"区分开.
 
     这是对"exit 0 + 空输出 = 假阴性"陷阱的解法: 发现失败(0 文件 / dx 失败)时给出
     独立信号, 否则 agent 会把"源没被发现"当成"没错误"而停止排查。
     - 恒: 所有源都没发现文件, 或某源 dx 失败 -> 打人读警告到 stderr (默认开启, 不污染 stdout)。
-    - summary: 额外打一条 JSON 记录到 stderr, 供 agent 程序化 cross-check。
+    - summary: 额外打一条 JSON 记录到 stderr, 供 agent 程序化 cross-check; 含 latest_ts 锚点。
     """
     if not probe:
         return
@@ -90,23 +113,29 @@ def _provenance(probe: List[dict], summary: bool, out_count: int) -> None:
     elif dx_fail:
         print(f"warning: 以下源未发现日志/dx 失败: {', '.join(dx_fail)}", file=sys.stderr)
     if summary:
-        print(json.dumps({
+        rec = {
             "kind": "logtail.summary",
             "sources": probe,
             "total_files": total_files,
             "matched": out_count,
-        }, ensure_ascii=False), file=sys.stderr)
+        }
+        if latest_ts is not None:
+            rec["latest_ts"] = latest_ts
+        print(json.dumps(rec, ensure_ascii=False), file=sys.stderr)
 
 
 def dump(cfg: Config, match: Optional[str], lines_n: int,
          wait: float = 2.0, context: int = 0,
          since: Optional[float] = None, count_only: bool = False,
-         exclude: Optional[str] = None, summary: bool = False) -> int:
+         exclude: Optional[str] = None, summary: bool = False,
+         ctx_same: int = 0, as_json: bool = False) -> int:
     """收集最近若干行(经黑名单/可选 match/时间窗), 打印后退出.
 
-    context   > 0: 每条命中行连同前后各 context 行一起输出。
+    context   > 0: 每条命中行连同**全局时间序**前后各 context 行一起输出。
+    ctx_same  > 0: 每条命中行连同**同进程**前后各 ctx_same 行一起输出 (跳过其它进程的行)。
     since     > 0: 只看日志时间戳在 [最新日志-至今, 最新日志] 内的行 (秒)。
     count_only    : 只输出命中行数, 不打印正文 (快速判断是否爆发)。
+    as_json       : 每行输出一个 JSON 对象 (NDJSON), 而非定宽文本。
     match / exclude: 逗号或空格分隔多词; exclude 命中则剔除。
     """
     matchers = _build_match_rules(_split_terms(match))
@@ -114,8 +143,9 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     blk = _build_blk(cfg)
     # history/since 多取一些, 让上下文窗/时间窗有素材
     hist = max(lines_n, cfg.history or 0)
-    if context:
-        hist += context * 2 + 2
+    needs_ctx = context or ctx_same
+    if needs_ctx:
+        hist += needs_ctx * 2 + 2
     follower = LogFollower(cfg.sources, history=hist, since=cfg.since)
     follower.start()
 
@@ -147,12 +177,11 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
 
     seen.sort(key=lambda l: (l.ts_key, l.seq))
 
-    # 时间窗过滤: 以"最新一条日志的时间戳"为参考, 而非 wall-clock (time.time()).
-    # 这样实时 tail 与历史 --date 扫描都正确 —— 否则看历史日时所有时间戳都早于
-    # wall-clock 的 cutoff, 会被全部清空。
-    if since and since > 0 and seen:
-        latest = max(ln.ts_seconds for ln in seen)
-        cutoff = latest - since
+    # 时间窗锚点: 以"最新一条日志的时间戳"为参考, 而非 wall-clock (time.time()).
+    # 这样实时 tail 与历史 --date 扫描都正确; 锚点也暴露给 summary, 供 agent 自校验。
+    latest_ts = max((ln.ts_seconds for ln in seen), default=None)
+    if since and since > 0 and seen and latest_ts is not None:
+        cutoff = latest_ts - since
         seen = [ln for ln in seen if ln.ts_seconds >= cutoff - 1]
 
     # 选出命中行 (或全部重新过滤) 并决定输出
@@ -160,20 +189,37 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         # count 不管有无 match: 统计通过 黑名单+级别+match/exclude 的行数
         n_hit = sum(1 for ln in seen if _apply(ln, blk, matchers, excludes))
         print(n_hit)
-        _provenance(probe, summary, n_hit)
+        _provenance(probe, summary, n_hit, latest_ts)
         return 0
 
     if not matchers:
         out = seen[-lines_n:]           # 无 match: 输出最近 lines_n 行
         for ln in out:
-            print(format_line(ln))
-        _provenance(probe, summary, len(out))
+            print(_emit(ln, as_json))
+        _provenance(probe, summary, len(out), latest_ts)
         return 0
     else:
         hit_idx = [i for i, ln in enumerate(seen)
                    if _apply(ln, blk, matchers, excludes)]
         out_idx: List[int] = []
-        if context > 0:
+        if ctx_same:
+            # 同源上下文: 命中行所在进程的前后各 ctx_same 行 (其它进程的行不参与,
+            # 用"该源在 seen 里的下标序列"取邻居, 天然规避跨进程交错)。
+            src_idx: dict[str, List[int]] = defaultdict(list)
+            for j, ln in enumerate(seen):
+                src_idx[ln.source].append(j)
+            added: set = set()
+            for i in hit_idx:
+                pos = bisect_left(src_idx[seen[i].source], i)
+                lo = max(0, pos - ctx_same)
+                hi = min(len(src_idx[seen[i].source]), pos + ctx_same + 1)
+                for j in src_idx[seen[i].source][lo:hi]:
+                    if j not in added:
+                        added.add(j)
+                        out_idx.append(j)
+            out_idx.sort()
+            out_idx = out_idx[-lines_n:] if len(out_idx) > lines_n else out_idx
+        elif context > 0:
             for i in hit_idx:
                 lo = max(0, i - context)
                 hi = min(len(seen), i + context + 1)
@@ -186,9 +232,8 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
             out_idx = hit_idx[-lines_n:]
 
         for i in out_idx:
-            ln = seen[i]
-            print(format_line(ln))
-        _provenance(probe, summary, len(out_idx))
+            print(_emit(seen[i], as_json))
+        _provenance(probe, summary, len(out_idx), latest_ts)
     return 0
 
 
@@ -200,7 +245,8 @@ def _split_terms(text: Optional[str]) -> List[str]:
 
 
 def monitor(cfg: Config, match: Optional[str], lines_n: int,
-            exclude: Optional[str] = None, summary: bool = False) -> int:
+            exclude: Optional[str] = None, summary: bool = False,
+            as_json: bool = False) -> int:
     """持续把过滤后的日志打到 stdout, 直到 Ctrl+C."""
     matchers = _build_match_rules(_split_terms(match))
     excludes = _build_exclude_rules(_split_terms(exclude))
@@ -215,7 +261,7 @@ def monitor(cfg: Config, match: Optional[str], lines_n: int,
             batch = follower.queue.drain()
             for ln in batch:
                 if _apply(ln, blk, matchers, excludes):
-                    print(format_line(ln))
+                    print(_emit(ln, as_json))
                     sys.stdout.flush()
             graces += 1
             # 一次性提示: 启动约 1s 后若仍无任何发现 (dx 慢/失败/空目录), 打诊断到 stderr

@@ -37,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  --lines/--wait/--count 仅 agent 生效; --mode monitor 忽略 -C/--since/--count。\n"
             "  --since(dump) 以窗口内最新日志时间戳为参考; '-C 5s' 时间窗仅交互版可用 (agent 的 -C 只接受行数)。\n"
             "  --wait(dump) 自收到首条有效行后约 1s 无新行才提前返回(初始化期不提前, 会等到 --wait)。\n"
+            "  --ctx-same N 仅 agent+match(同进程上下文, 与 -C 全局互补); --diagnose 独立健康检查(不 tail)。\n"
         ),
     )
     p.add_argument("--config", "-c", default=None,
@@ -75,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="agent dump 模式收集窗口 (秒, 默认 2.0)")
     p.add_argument("--summary", action="store_true",
                    help="agent 结束时把'发现诊断'(JSON)写到 stderr, 区分'无日志'与'源未发现'")
+    p.add_argument("--json", action="store_true", dest="as_json",
+                   help="agent 每行输出一个 JSON 对象 (NDJSON), 供编程级加工 (默认定宽文本)")
+    p.add_argument("--ctx-same", type=int, default=0,
+                   help="agent+match: 每条命中行连同**同进程**前后各 N 行 (跳过其它进程的行)")
+    p.add_argument("--diagnose", action="store_true",
+                   help="只做发现健康检查(不 tail): 每源文件数/dx 状态/最后时间戳, JSON 输出")
     p.add_argument("--version", action="version", version=f"logtail {__version__}")
     return p
 
@@ -102,13 +109,27 @@ def main(argv=None) -> int:
         print(f"logtail: {exc}", file=sys.stderr)
         return 2
 
+    # 健康检查: 只探测源是否被发现, 不 tail 不读正文. 供 agent 先验证再信 "0 命中".
+    if args.diagnose:
+        import json
+        from .reader import LogFollower
+        report = LogFollower(cfg.sources).diagnose()
+        total_files = sum(s["files"] for s in report)
+        print(json.dumps({
+            "kind": "logtail.diagnose",
+            "sources": report,
+            "total_files": total_files,
+        }, ensure_ascii=False))
+        return 0
+
     # AI Agent 模式: 不走 curses, 直接输出纯文本
     if args.agent:
         from .agent import dump, monitor
         try:
             if args.agent_mode == "monitor":
                 return monitor(cfg, args.match, args.lines,
-                               exclude=args.exclude, summary=args.summary)
+                               exclude=args.exclude, summary=args.summary,
+                               as_json=args.as_json)
             # dump: --context/-C 可当作命中行的上下文窗口 (结合 --match 用)
             # --trace 作为 match 但零上下文 (纯命中行, 无邻居)
             match = args.trace if args.trace else args.match
@@ -116,7 +137,8 @@ def main(argv=None) -> int:
             return dump(cfg, match, args.lines, args.wait,
                         context=ctx, since=since,
                         count_only=args.count, exclude=args.exclude,
-                        summary=args.summary)
+                        summary=args.summary, ctx_same=args.ctx_same,
+                        as_json=args.as_json)
         except RulePatternError as exc:
             print(f"logtail: --match 规则错误: {exc}", file=sys.stderr)
             return 2
