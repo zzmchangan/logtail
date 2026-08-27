@@ -1,13 +1,17 @@
-# logtail 微服务专用配置 —— 查 ms 微服务(Team/Bar 等)时用, 去掉 DEBUG 黑名单
+# logtail 微服务专用视野 —— 只含 ms 源(Team 等), 无 DEBUG 黑名单、无大服噪声
 #
-# 用途: 微服务日志几乎全为 [Debug] 级, 主 config.yaml 的黑名单 "DEBUG"(大小写不敏感)会把它们全滤掉,
-#       导致 --focus team/bar 显示为空(不是没日志)。查微服务时用本配置(不含 "DEBUG" 黑名单)。
+# ⚠️ 首选路线已变(2026-08-27 动态黑名单落地后):
+#   查微服务/跨服联查用主 config + --blacklist-del DEBUG 一步到位, 不必切本文件:
+#     logtail --agent --config config.yaml --blacklist-del debug --focus team --since 5m
+#   登录/认证链路(clientgate/login)也常驻主 config 了(enabled: false):
+#     logtail --agent --config config.yaml --enable-source login,clientgate --blacklist-del debug
 #
-# 配合 --config 切换: 查微服务用本文件, 查游戏大服用 config.yaml。
+# 本文件的剩余价值: 只看微服务、完全不要大服聚合流时用它(天然去噪)。
 #   logtail --config /data/workspace/logtail/config.ms.yaml --agent --focus team --since 5m
 #
-# 按需加其它微服务(都在 /data/vm-ro3-deploys/log/ms/ 下):
-#   avatar/friend/mail/login/party/pay/push/queue/rank/trade*/uuid..., 例:
+# 按需加其它微服务(都在 /data/vm-ro3-deploys/log/ms/ 下, 加 enabled: false 可配
+# --enable-source 按名拉起), 例:
+#   avatar/friend/mail/party/pay/push/queue/rank/trade*/uuid..., 例:
 #   - name: mail
 #     path: /data/vm-ro3-deploys/log/ms/MailService
 #     pattern: "mail-service-*/mail_service.log"
@@ -17,22 +21,13 @@ log_sources:
     path: /data/vm-ro3-deploys/log/ms/TeamService
     pattern: "team-service-*/team_service.log"
 
-  # bar 暂不需要, 按需取消注释(同 team 都是微服务, 用本配置可读 [Debug] 级):
+  # bar 暂不需要, 按需取消注释(同 team 都是微服务, 本配置无 DEBUG 黑名单可直接读):
   # - name: bar
   #   path: /data/vm-ro3-deploys/log/ms/BarService
   #   pattern: "bar-service-*/bar_service.log"
 
-  # 登录/认证链路排查(高频场景): clientgate(连接/绑定/转发) + login(verifyWithoutSdk/getRoleInfo/token)。
-  # 按需取消注释; 与 scene 等大服联查时临时加 --source, 或改用主配置 + --blacklist-del DEBUG + --source 这两条。
-  # ⚠️ clientgate 单文件可达 173MB+, 宽窗(--since >5m)易顶 30s backlog 硬上限, 建议窄窗 + --keep head。
-  # - name: login
-  #   path: /data/vm-ro3-deploys/log/ms/LoginService
-  #   pattern: "login-service-*/login_service.log"
-  # - name: clientgate
-  #   path: /data/vm-ro3-deploys/log/ms/ClientGateService
-  #   pattern: "client-gate-service-*/client_gate_service.log"
-
-# 微服务日志为 Debug 级? 这里刻意不放 "DEBUG", 否则滤掉全部。
+# 刻意不放 "DEBUG" —— 微服务日志几乎全为 [Debug] 级。
+# (主配置放 DEBUG 是为了去大服噪声; 查大服 Debug 行用主配置 + --blacklist-del debug。)
 blacklist:
   - "heartbeat"
   - "keepalive"
@@ -44,10 +39,10 @@ keywords:
   - "timeout"
   - "Assert"
 
-# 关联键(同主配置): player 用 Guid:/roleId:/player: 三种写法兜底。
+# 关联键(同主配置): JSON 引号容错("RoleId":"123")与裸写法(Guid:/roleId:/player=)都认。
 correlation_keys:
   - name: player
     extract:
-      - "Guid[:=] *(\\d+)"
-      - "roleId[:=] *(\\d+)"
-      - "player[:=] *(\\d+)"
+      - '"?Guid"?[:=] *"?(\d+)'
+      - '"?roleId"?[:=] *"?(\d+)'
+      - '"?player"?[:=] *"?(\d+)'

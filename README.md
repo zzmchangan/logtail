@@ -167,7 +167,7 @@ correlation_keys:
 
 **工作流铁律：先看代码，再调 config。** 排查前先读代码，初步确认涉及哪些服务器 / 关键字，再打开对应源——不要一上来就全量调日志。配置分两份：
 - `config.yaml`（主配置）：游戏大服用 dx 自动发现（scene/scenemgr/guild/match），微服务用 glob（team，在 `/ms/`）。默认只开开发常用服（scene/scenemgr/guild/match/team）；auction/public/http/activity/relation/bar 为低频服**注释**，涉及对应 bug 时取消注释。
-- `config.ms.yaml`（微服务专用）：**去掉了 `DEBUG` 黑名单**。因为 Team/Bar 等微服务日志几乎全为 `[Debug]` 级，主配置的黑名单 `"DEBUG"`（大小写不敏感）会把它们全滤掉、`--focus team` 显示为空（不是没日志）。查微服务时用 `--config config.ms.yaml` 切过来。
+- 查微服务/追 scene 链路(Team 等日志几乎全为 `[Debug]` 级,主配置黑名单 `"DEBUG"` 会全滤掉):**首选主配置 + `--blacklist-del debug`**,不必切配置;`config.ms.yaml`(只含 ms 源、无 DEBUG 黑名单)是"完全不要大服噪声"时的备用视野。
 
 **一个连贯的排查闭环**（probe → narrow → expand → conclude），每环都有便宜、可组合的工具：
 - **probe**：`--count --since 5m` 探是否爆发；`--diagnose` 确认源活着。
@@ -177,7 +177,7 @@ correlation_keys:
 
 **两条还不兴写进别处的坑**：
 - `--source NAME:目录:pattern` 的 PATH 是**目录不是文件**——直连单文件要用 glob 目录 + pattern；要用 dx 源只能改 config。
-- `--source` 临时加的源**同样受主配置黑名单约束**：主 config 的 `"DEBUG"` 黑名单会把微服务 `[Debug]` 行全滤掉，`--focus bar` 显示为空不是"源没发现"。查微服务切 `config.ms.yaml`。
+- `--source` 临时加的源**同样受主配置黑名单约束**：主 config 的 `"DEBUG"` 黑名单会把微服务 `[Debug]` 行全滤掉，`--focus bar` 显示为空不是"源没发现"——加 `--blacklist-del debug` 放行。
 - `--lines` 要 ≥ 目标行跨度，太小读不到周期性行（如 `GCInfo`）——这类行每隔几秒一条，`--lines 30` 会只取到最近 30 条而把更早的漏掉。
 
 **游戏服务器专属认知**：跨进程跟一条逻辑链路，前提是那个 id 真的出现在多服日志里；playerId 偏 Scene 侧。若想跨服追请求级链路，需游戏在日志里注入稳定的 callId / requestId。
