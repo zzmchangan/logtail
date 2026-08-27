@@ -109,6 +109,13 @@ class TestOutputContract(CliCase):
         r = self.cli("--agent", "--config", self.cfg, "--since", "5x")
         self.assertEqual(r.returncode, 2)
 
+    def test_exit_2_bad_level(self):
+        """坑5回归: 无效 --level 必须 fail-fast exit 2, 而非静默忽略输出全量."""
+        r = self.A("--level", "DEUGB")
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("level", r.stderr.lower())
+
     def test_exit_2_bad_source_format(self):
         r = self.cli("--agent", "--config", self.cfg, "-s", "nopathsep")
         self.assertEqual(r.returncode, 2)
@@ -226,6 +233,37 @@ class TestFilteringMatrix(CliCase):
                      "--wait", "1", "--lines", "5")
         # 无匹配文件也不崩, exit 0
         self.assertEqual(r.returncode, 0)
+
+    def test_date_warns_for_dx_source_without_placeholder(self):
+        """坑4回归: --date 对不含 {date} 的 dx 源无效, 必须向 stderr 明示."""
+        cfg2 = os.path.join(self.dir, "dx.yaml")
+        with open(cfg2, "w") as f:
+            f.write('log_sources:\n  - name: s\n    dx: "echo /tmp/x.log"\n')
+        r = self.cli("--agent", "--config", cfg2, "--date", "2026-08-26",
+                     "--wait", "0.5", "--lines", "5")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("--date", r.stderr)
+        self.assertIn("dx", r.stderr)
+
+    def test_since_cap_warns_on_large_file(self):
+        """坑2回归: 文件超过 SINCE_CAP(8MB) 时 --since 窗口可能截断, 必须明示."""
+        import logtail.reader as rdr
+        big = os.path.join(self.dir, "big.log")
+        with open(big, "w") as f:
+            # ~9MB 旧行 (远超 8MB cap), 最后两行是"最近"时间戳
+            old = "[2026-08-27 00:00:00] old padding line aaaaaaaaaa\n"
+            f.write(old * (9 * 1024 * 1024 // len(old.encode()) + 1))
+            f.write("[2026-08-27 23:59:59] recent tail one\n")
+            f.write("[2026-08-27 23:59:59] recent tail two\n")
+        cfg2 = os.path.join(self.dir, "big.yaml")
+        with open(cfg2, "w") as f:
+            f.write(f"log_sources:\n  - name: big\n    path: {self.dir}\n"
+                    f'    pattern: "big.log"\nblacklist: []\n')
+        r = self.cli("--agent", "--config", cfg2, "--since", "1h",
+                     "--wait", "1.5", "--lines", "100")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("8MB", r.stderr)                               # 触顶警告
+        self.assertIn("recent tail", r.stdout)                       # 尾部新行仍在
 
 
 class TestMonitor(CliCase):

@@ -201,6 +201,20 @@ class TestDump(unittest.TestCase):
         self.assertEqual(out.strip(), "")
 
 
+    def test_exclude_only_filters_output(self):
+        """坑1回归: --exclude 单独用 (无 match/correlate/count) 时, 正文输出也必须剔除."""
+        out, _ = dump_to(self.cfg, exclude="player")
+        self.assertNotIn("player", out)                             # enter/crash/slow 全剔
+        self.assertEqual(len(out.strip().splitlines()), 2)          # 只剩 tick + heartbeat
+        self.assertIn("tick", out)
+
+    def test_exclude_only_keeps_non_matching(self):
+        self.cfg.blacklist = ["heartbeat"]
+        out, _ = dump_to(self.cfg, exclude="crash")
+        self.assertNotIn("crash", out)
+        self.assertIn("enter", out)                                  # 不含 crash 的行保留
+
+
 class TestDumpEdgeCases(unittest.TestCase):
     def test_empty_dir_outputs_nothing_exit_zero(self):
         cfg = write_cfg_dir({})

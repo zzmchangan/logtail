@@ -73,6 +73,7 @@ blacklist:
   - "timer_tick"
   - "DEBUG"
   - "InspectUtils"
+  - "SceneMgrStats"        # SceneMgrServer CollectStatistics 周期状态汇总(Info级, 一天上千条); 详实的建线/AutoScaling 不受影响
 
 # 初始高亮词: 启动时作为关键词列表加载(运行时可用 /keyword 动态增删)。
 # 仅当运行中输入 /save 才会把当前高亮词与黑名单写回本文件。

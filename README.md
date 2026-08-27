@@ -118,6 +118,19 @@ correlation_keys:
 - 黑名单**始终生效**; 不带 `--match`/`-C` 时输出黑名单过滤后的全部最近 N 行。
 - Agent 修 bug 的用法: 先 `--match` 收窄到错误行 → `-C` 补上下文 → `--since` 限时间段 → `re:` 正则再收窄 → 拿到极少量却完整的线索。
 
+### 三层读取模型 (用对的关键)
+参数分三层,**各自独立的旋钮**,想通这个就不会出现"match 了明明存在的行却空":
+
+| 层 | 参数 | 决定什么 |
+|---|---|---|
+| ① 采集量 | `--since`(**优先**, 按时间戳定位起点, 8MB/文件上限) / `--history` / `--lines`(无 since 时) | **读多少**进内存 |
+| ② 过滤 | `--match`/`--exclude`/`--level`/`--focus`/`--correlate` | 读到的行里**留哪些** |
+| ③ 输出量 | `--lines` | **打出几条** (仅正文条数上限; `--count` 不受它限) |
+
+常见误区:把 `--lines` 当"读多少行"。想深挖某个旧行 → **加大读取量**(大 `--lines` 或大 `--history`, 或去掉 `--since`),不是加大输出。另注意 `--since` 一旦给出,`--lines`/`--history` 不再决定回溯量。
+
+**de-noise 优先级**(聚合流本身可能是新刷屏): `--focus`(单源) > `--level ERROR` > `--match`。超长刷屏行(如 SceneMgrStats)优先 focus 掉。
+
 ### 输出契约 (AI / 脚本接入必读)
 - **stdout 只放日志正文**, 错误/提示走 **stderr**。所以可直接 `python -m logtail --agent ... 2>/dev/null` 只取日志; 管道给 grep/head 也不会混入报错。
 - **退出码**: `0`=成功 (含 0 条命中); `2`=配置/参数/正则错误。
@@ -131,6 +144,10 @@ correlation_keys:
 - **`--json` 契约**: 每行一个 JSON 对象 `{"ts","ts_seconds","source","level","text","seq"}`。`ts` 供人读/对齐窗口, `ts_seconds` 为 epoch 秒供排序比较, `seq` 供确定性重放; `--count`/`--summary` 不受影响(仍只在各自位置)。
 - **`--summary` 锚点**: JSON 里含 `latest_ts`——`--since` 实际锚定的"最新一条日志时间戳"。agent 据它自校验"这个窗口对齐的是哪个时间", 尤其注意 GM 调时间(multiTimeOffset)会让日志时间≠墙钟, 别用墙钟去对。
 - **`--diagnose`**: 独立健康检查(不 tail), JSON 到 stdout。**拿到空结果先跑它**: 若某源 `discovered:false`/`dx_error` 非空 → 源没被找到, 别下"无错误"结论。
+- **`--since` 的优先级与上限**: 给了 `--since` 就**按时间戳定位采集起点**(`--lines`/`--history` 不再决定回溯量); 采集回读上限 **8MB/文件**, 超过时 stderr 会打 `warning: ... 超过回读上限 8MB`——窗口前部旧行读不到, `--match` 可能漏掉窗口边缘命中。超大文件要完整覆盖, 用 glob 源 + `--lines 100000`。
+- **`--count` 的统计范围**: 统计**全部读取量**(受上面 8MB cap 影响), **不受 `--lines` 限制**——`--lines` 只是正文输出条数上限。即 `count = 窗口内真实命中数`, `lines = 你这次想看几条`。
+- **`--date` 的生效范围**: 只对含 `{date}`/`{YYYY}` 等占位符的源生效(path/pattern/**dx 命令里写了 `{date}`**)。dx 命令不含占位符时给 `--date` 无效(仍读当天), stderr 会打 warning 明示。dx 源看历史某天需 dx 命令本身支持日期参数。
+- **实时日志做对照实验不可靠**: `--since` 锚定"最新一条日志时间戳", 每次调用间隔几秒窗口就漂移。确定性验证: `--match X --lines 100000 --count` 固定大读取量, 或 glob 源 + `--date` 锁历史。
 
 ### AI 排查工作流与坑（心得体会）
 

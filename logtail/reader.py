@@ -16,6 +16,7 @@ import itertools
 import os
 import shlex
 import subprocess
+import sys
 import threading
 import time
 from typing import Dict, List, Optional, Set
@@ -206,6 +207,8 @@ class _SourceWorker(threading.Thread):
         --since 5m 时用于排查服务器启动报错: 日志文件已很大, 想直接回看到
         "最近 5 分钟"那一段。从文件末尾向前扫, 找第一条时间戳落在窗口内的行。
         受回读上限 (SINCE_CAP) 约束; 超限或窗内有行无法解析时退化为从头/末尾。
+        超过上限时向 stderr 明示"窗口可能不完整", 而非静默截断 (否则用户会
+        以为 --since 2h 真的覆盖了两小时)。
         """
         secs = self._owner.since
         if secs <= 0 or size == 0:
@@ -213,6 +216,9 @@ class _SourceWorker(threading.Thread):
         cutoff = time.time() - secs
         cap = min(size, SINCE_CAP)
         read_start = size - cap
+        if read_start > 0:
+            print(f"logtail: warning: {path} 超过回读上限 8MB, --since 窗口可能不完整 "
+                  f"(从最近 8MB 起读, 更早的行看不到)", file=sys.stderr)
         try:
             with open(path, "rb") as fh:
                 fh.seek(read_start)

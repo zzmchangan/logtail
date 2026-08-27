@@ -238,8 +238,8 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         _provenance(probe, summary, n_hit, latest_ts, correlate_info)
         return 0
 
-    if not matchers and not has_correlate:
-        out = seen[-lines_n:]           # 无 match/无 correlate: 输出最近 lines_n 行
+    if not matchers and not has_correlate and not excludes:
+        out = seen[-lines_n:]           # 无 match/correlate/exclude: 输出最近 lines_n 行
         for ln in out:
             print(_emit(ln, as_json))
         _provenance(probe, summary, len(out), latest_ts)

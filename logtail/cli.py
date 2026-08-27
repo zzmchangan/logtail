@@ -108,10 +108,27 @@ def main(argv=None) -> int:
         apply_cli(cfg, args.source, args.history, args.context, date=args.date)
         cfg.since = since or 0.0
         if args.level:
+            # fail-fast: 无效级别立即报错, 而不是静默不过滤 (agent 的 _build_blk
+            # 会吞掉 ValueError, 拼错级别会输出全量、极难察觉)
+            from .levelparse import LEVEL_ORDER
+            if args.level.upper() not in LEVEL_ORDER:
+                print(f"logtail: --level 无效: {args.level!r} "
+                      f"(可用 {', '.join(LEVEL_ORDER)})", file=sys.stderr)
+                return 2
             cfg.level = args.level.upper()
         if args.trace:
             cfg.trace = args.trace
         cfg.validate()
+        # --date 只对含 {date} 占位符的源生效; dx 源若命令里没写 {date}
+        # (且 dx CLI 不接受日期参数), 给了 --date 也仍读当天 —— 明示而非静默。
+        if args.date:
+            blind = [s.name for s in cfg.sources
+                     if s.dx and "{date}" not in s.dx
+                     and "{YYYY}" not in s.dx and "{MM}" not in s.dx
+                     and "{DD}" not in s.dx]
+            if blind:
+                print(f"logtail: warning: --date 对 dx 命令不含日期占位符的源无效 "
+                      f"(仍读当天): {', '.join(blind)}", file=sys.stderr)
     except ConfigError as exc:
         print(f"logtail: 配置错误: {exc}", file=sys.stderr)
         return 2
