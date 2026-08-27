@@ -56,23 +56,24 @@ def _emit(ln, as_json: bool) -> str:
     return _json_line(ln) if as_json else format_line(ln)
 
 
-def _build_match_rules(patterns: List[str]) -> List[Rule]:
-    """把一组查询词编译成匹配规则 (OR 语义); 复用裸词/re: 逻辑."""
-    rs = RuleSet(keywords=patterns or [])
+def _build_match_rules(patterns: List[str], cfg: Config) -> List[Rule]:
+    """把一组查询词编译成匹配规则 (OR 语义); 复用裸词/re: 逻辑, 继承大小写开关."""
+    rs = RuleSet(keywords=patterns or [],
+                 case_sensitive=cfg.case_sensitive)
     return rs.list_highlights()
 
 
-def _build_exclude_rules(patterns: List[str]) -> List[Rule]:
-    """把排除词编译成规则 (命中即剔除); 复用黑名单语义."""
+def _build_exclude_rules(patterns: List[str], cfg: Config) -> List[Rule]:
+    """把排除词编译成规则 (命中即剔除); 复用黑名单语义, 继承大小写开关."""
     if not patterns:
         return []
-    rs = RuleSet(blacklist=patterns)
+    rs = RuleSet(blacklist=patterns, case_sensitive=cfg.case_sensitive)
     return rs.list_blacklist()
 
 
 def _build_blk(cfg: Config) -> RuleSet:
-    """构造黑名单+级别过滤的规则集 (agent 采集阶段应用)."""
-    blk = RuleSet(blacklist=cfg.blacklist)
+    """构造黑名单+级别过滤的规则集 (agent 采集阶段应用), 继承大小写开关."""
+    blk = RuleSet(blacklist=cfg.blacklist, case_sensitive=cfg.case_sensitive)
     if cfg.level:
         try:
             blk.set_level_filter(cfg.level)
@@ -161,12 +162,13 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     match / exclude: 逗号或空格分隔多词; exclude 命中则剔除。
     hard_cap      : backlog 阶段的硬上限 (秒), 防挂死; 超限打 stderr 警告。
     """
-    matchers = _build_match_rules(_split_terms(match))
-    excludes = _build_exclude_rules(_split_terms(exclude))
+    matchers = _build_match_rules(_split_terms(match), cfg)
+    excludes = _build_exclude_rules(_split_terms(exclude), cfg)
     blk = _build_blk(cfg)
     # 关联键: 解析 key=value, 准备抽取/归一化比对. 未知 key 回退字面 --trace.
     c_key, c_raw_val, c_val = _split_correlate(correlate)
-    correlator = CorrelationKeys(cfg.correlation_keys)
+    correlator = CorrelationKeys(cfg.correlation_keys,
+                                 case_sensitive=cfg.case_sensitive)
     has_correlate = bool(correlate)
 
     def _correl(ln) -> bool:
@@ -339,11 +341,12 @@ def monitor(cfg: Config, match: Optional[str], lines_n: int,
             as_json: bool = False, focus: Optional[str] = None,
             correlate: Optional[str] = None) -> int:
     """持续把过滤后的日志打到 stdout, 直到 Ctrl+C."""
-    matchers = _build_match_rules(_split_terms(match))
-    excludes = _build_exclude_rules(_split_terms(exclude))
+    matchers = _build_match_rules(_split_terms(match), cfg)
+    excludes = _build_exclude_rules(_split_terms(exclude), cfg)
     blk = _build_blk(cfg)
     c_key, c_raw_val, c_val = _split_correlate(correlate)
-    correlator = CorrelationKeys(cfg.correlation_keys)
+    correlator = CorrelationKeys(cfg.correlation_keys,
+                                 case_sensitive=cfg.case_sensitive)
 
     def _correl(ln) -> bool:
         if c_key is None:

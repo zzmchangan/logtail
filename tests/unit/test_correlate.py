@@ -83,5 +83,17 @@ class TestBadInput(unittest.TestCase):
         self.assertEqual(ck.keys(), [])
 
 
+class TestCaseSensitive(unittest.TestCase):
+    def test_extract_respects_case(self):
+        ck = CorrelationKeys([{"name": "p", "extract": [r"Player[:=] *(\d+)"]}],
+                             presets=False, case_sensitive=True)
+        self.assertEqual(ck.extract1("Player=5 x", "p"), "5")
+        self.assertIsNone(ck.extract1("player=5 x", "p"))           # 小写不匹配
+        # 默认不敏感
+        ck2 = CorrelationKeys([{"name": "p", "extract": [r"Player[:=] *(\d+)"]}],
+                              presets=False)
+        self.assertEqual(ck2.extract1("player=5 x", "p"), "5")
+
+
 if __name__ == "__main__":
     unittest.main()

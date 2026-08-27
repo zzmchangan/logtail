@@ -25,18 +25,21 @@ class RulePatternError(ValueError):
 class Rule:
     """单条匹配规则."""
 
-    __slots__ = ("rule_id", "kind", "pattern", "is_regex", "_matcher")
+    __slots__ = ("rule_id", "kind", "pattern", "is_regex", "case_sensitive", "_matcher")
 
-    def __init__(self, rule_id: int, kind: str, pattern: str) -> None:
+    def __init__(self, rule_id: int, kind: str, pattern: str,
+                 case_sensitive: bool = False) -> None:
         self.rule_id = rule_id
         self.kind = kind            # "highlight" 或 "blacklist"
         self.pattern = pattern
+        self.case_sensitive = case_sensitive
         self.is_regex = pattern.startswith("re:")
         if self.is_regex:
             expr = pattern[3:]
             try:
-                # IGNORECASE: 正则同样大小写不敏感
-                self._matcher = re.compile(expr, re.IGNORECASE)
+                # 默认大小写不敏感; case_sensitive 时精确 (re: 目前无法自带关闭)
+                flags = 0 if case_sensitive else re.IGNORECASE
+                self._matcher = re.compile(expr, flags)
             except re.error as exc:
                 raise RulePatternError(
                     f"正则表达式无效: {expr!r} ({exc})"
@@ -47,6 +50,8 @@ class Rule:
     def matches(self, text: str) -> bool:
         if self.is_regex:
             return bool(self._matcher.search(text))
+        if self.case_sensitive:
+            return self.pattern in text
         return self.pattern.lower() in text.lower()
 
     def __repr__(self) -> str:  # pragma: no cover - 仅为调试
@@ -57,9 +62,11 @@ class RuleSet:
     """管理高亮与黑名单规则, 支持运行时动态增删."""
 
     def __init__(self, keywords: Optional[List[str]] = None,
-                 blacklist: Optional[List[str]] = None) -> None:
+                 blacklist: Optional[List[str]] = None,
+                 case_sensitive: bool = False) -> None:
         self._ids = itertools.count(1)
         self._rules: Dict[Tuple[str, str], Rule] = {}   # (kind, pattern) -> Rule
+        self._case_sensitive = case_sensitive
         for kw in (keywords or []):
             self.add(kw, "highlight")
         for bl in (blacklist or []):
@@ -101,7 +108,8 @@ class RuleSet:
         key = (kind, pattern)
         if key in self._rules:
             return self._rules[key]
-        rule = Rule(next(self._ids), kind, pattern)
+        rule = Rule(next(self._ids), kind, pattern,
+                    case_sensitive=self._case_sensitive)
         self._rules[key] = rule
         return rule
 

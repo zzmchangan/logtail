@@ -95,5 +95,36 @@ class TestLevelFilter(unittest.TestCase):
         self.assertEqual(r.min_level, "")
 
 
+class TestCaseSensitive(unittest.TestCase):
+    def test_bare_word(self):
+        r = Rule(1, "highlight", "Dragon", case_sensitive=True)
+        self.assertTrue(r.matches("Dragon island"))
+        self.assertFalse(r.matches("dragon2 account"))             # 精确: 不撞小写
+        self.assertFalse(r.matches("DRAGON"))
+
+    def test_bare_word_default_insensitive(self):
+        r = Rule(1, "highlight", "Dragon")
+        self.assertTrue(r.matches("dragon2"))                      # 默认: 撞
+
+    def test_regex(self):
+        r = Rule(1, "highlight", "re:Error", case_sensitive=True)
+        self.assertTrue(r.matches("[Error] x"))
+        self.assertFalse(r.matches("[ERROR] x"))
+        r2 = Rule(1, "highlight", "re:Error")
+        self.assertTrue(r2.matches("[ERROR] x"))                   # 默认 IGNORECASE
+
+    def test_ruleset_inherits(self):
+        rs = RuleSet(blacklist=["DEBUG"], case_sensitive=True)
+        self.assertTrue(rs.blocked("DEBUG level"))
+        self.assertFalse(rs.blocked("[Debug] level"))
+        rs2 = RuleSet(blacklist=["DEBUG"])
+        self.assertTrue(rs2.blocked("[Debug] level"))              # 默认滤掉
+
+    def test_reset_inherits(self):
+        rs = RuleSet(case_sensitive=True)
+        rs.reset([], ["X"])
+        self.assertFalse(rs.blocked("x"))
+
+
 if __name__ == "__main__":
     unittest.main()

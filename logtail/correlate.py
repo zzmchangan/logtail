@@ -43,8 +43,10 @@ class CorrelationKeys:
     """管理一组关联键: 每个 key 按顺序试其正则, 取第一个抓到非空值的."""
 
     def __init__(self, raw: Optional[List[dict]] = None,
-                 presets: bool = True) -> None:
+                 presets: bool = True,
+                 case_sensitive: bool = False) -> None:
         self._keys: Dict[str, List[re.Pattern]] = {}
+        flags = 0 if case_sensitive else re.IGNORECASE
         for k in (raw or []):
             name = str(k.get("name", "")).strip()
             patterns = k.get("extract") or []
@@ -53,14 +55,14 @@ class CorrelationKeys:
             compiled = []
             for p in patterns:
                 try:
-                    compiled.append(re.compile(p, re.IGNORECASE))
+                    compiled.append(re.compile(p, flags))
                 except re.error:
                     continue
             self._keys[name] = compiled
         if presets:
             for name, patterns in _PRESETS.items():
                 if name not in self._keys:
-                    self._keys[name] = [re.compile(p, re.IGNORECASE) for p in patterns]
+                    self._keys[name] = [re.compile(p, flags) for p in patterns]
 
     def is_defined(self, key: str) -> bool:
         return key in self._keys

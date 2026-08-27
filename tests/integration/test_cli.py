@@ -89,7 +89,8 @@ class TestOutputContract(CliCase):
         r = self.cli("--help")
         for needle in ("三层读取模型", "8MB", "--date", "--correlate",
                        "--ctx-same", "--focus", "--diagnose", "假阴性",
-                       "硬上限", "读取未完成", "字面量", "head"):
+                       "硬上限", "读取未完成", "字面量", "head",
+                       "case-sensitive"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -178,6 +179,40 @@ class TestFilteringMatrix(CliCase):
         self.assertEqual(r.stdout.strip(), "")                    # 无行含字面 "tick|dump"
         r = self.A("--match", "re:(tick|dump)")
         self.assertEqual(len(r.stdout.strip().splitlines()), 2)   # 正则 OR 才是并集
+
+    def test_case_sensitive_flag(self):
+        """--case-sensitive: 精确匹配裸词/正则/黑名单; 不传时行为与旧版一致."""
+        # 夹具: "[Error][2] player=100 crash" 含小写 player / 大写 Error
+        # 1) 裸词: 默认不敏感 Dragon==dragon; 敏感则不命中
+        r = self.A("--match", "player=100")
+        self.assertEqual(len(r.stdout.strip().splitlines()), 2)   # 不敏感: 命中
+        r = self.A("--match", "PLAYER=100")
+        self.assertEqual(len(r.stdout.strip().splitlines()), 2)   # 不敏感: 大写也命中
+        r = self.A("--case-sensitive", "--match", "PLAYER=100")
+        self.assertEqual(r.stdout.strip(), "")                    # 敏感: 大写不命中
+        r = self.A("--case-sensitive", "--match", "player=100")
+        self.assertEqual(len(r.stdout.strip().splitlines()), 2)   # 敏感: 精确命中
+        # 2) 级别词陷阱: 敏感下 ERROR 撞不到 [Error]
+        r = self.A("--match", "ERROR")
+        self.assertEqual(len(r.stdout.strip().splitlines()), 2)   # 不敏感: [Error] 命中
+        r = self.A("--case-sensitive", "--match", "ERROR")
+        self.assertEqual(r.stdout.strip(), "")                    # 敏感: 撞不到
+        # 3) re: 正则同样受控
+        r = self.A("--case-sensitive", "--match", "re:ERROR")
+        self.assertEqual(r.stdout.strip(), "")
+        r = self.A("--case-sensitive", "--match", "re:Error")
+        self.assertEqual(len(r.stdout.strip().splitlines()), 2)   # 大小写精确
+        # 4) 黑名单: 敏感下 "DEBUG" 滤不掉 "[Debug]" (主配置 DEBUG 黑名单依赖不敏感)
+        cfg_cs = os.path.join(self.dir, "cs.yaml")
+        with open(cfg_cs, "w") as f:
+            f.write(f"log_sources:\n  - name: s\n    path: {self.dir}\n"
+                    f'    pattern: "guild*.log"\nblacklist: ["DEBUG"]\n')
+        base = ["--agent", "--config", cfg_cs, "--wait", "1",
+                "--lines", "50", "--since", "24h"]
+        r = self.cli(*base)
+        self.assertNotIn("detail dump", r.stdout)                 # 不敏感: [Debug] 行被滤
+        r = self.cli(*base, "--case-sensitive")
+        self.assertIn("detail dump", r.stdout)                     # 敏感: DEBUG≠[Debug], 保留
 
     def test_exclude(self):
         r = self.A("--match", "player=100", "--exclude", "crash")

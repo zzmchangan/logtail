@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
             "          8MB 扫描并 stderr 警告) 或 --history/--lines。\n"
             "  过滤:   --match/--exclude/--level/--focus/--correlate (--exclude 单独用也生效)。\n"
             "          注意: --match 'a|b' 的 | 是字面量非正则OR; 多词OR用空格/逗号或 re:(a|b)。\n"
+            "          默认匹配不敏感(ERROR 命中 [Error]); 要精确(Dragon≠dragon2)加 --case-sensitive。\n"
             "  输出量: --lines 只限正文条数; --count 统计全部读取量、不受 --lines 限。\n"
             "\n"
             "输出契约 (AI Agent / 脚本接入):\n"
@@ -85,6 +86,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--correlate", default=None,
                    help="按关联键对齐: 跨源只留抽出该 id 的行, 如 --correlate player=123; "
                         "key 在 config correlation_keys/预设里=抽取+归一化, 未定义=回退字面 --trace")
+    p.add_argument("--case-sensitive", action="store_true",
+                   help="agent 模式所有文本匹配区分大小写(裸词/正则/黑名单/correlate 抽取)。"
+                        "默认不敏感(--match ERROR 能命中 [Error]); 要精确(区分 Dragon 玩法与 "
+                        "dragon2 账号)才加, 且查级别词别加")
     p.add_argument("--since", default=None,
                    help="只看最近一段时间 (如 5m/1h/30s), 按日志自带时间戳过滤; "
                         "交互与 agent 模式均可用。排查服务器启动报错时回看启动窗口。")
@@ -136,6 +141,8 @@ def main(argv=None) -> int:
             print(f"logtail: --focus 无效: {args.focus!r} 不在配置的日志源里 "
                   f"(精确匹配, 大小写敏感; 可用: {names})", file=sys.stderr)
             return 2
+        if args.case_sensitive:
+            cfg.case_sensitive = True
         cfg.validate()
         # --date 只对含 {date} 占位符的源生效; dx 源若命令里没写 {date}
         # (且 dx CLI 不接受日期参数), 给了 --date 也仍读当天 —— 明示而非静默。

@@ -95,6 +95,7 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 - 前缀与交互版一致 (`[时间戳] 来源 正文`); Agent 能看出日志来自哪个进程。
 - `--match` 复用关键词写法: 裸词=子串, `re:`=正则, 大小写不敏感; 逗号/空格分隔多词 = OR。`--exclude` 命中即剔除。
   ⚠️ **`--match "a|b"` 的 `|` 是字面量不是正则 OR**——多词 OR 用空格/逗号分隔, 或 `re:(a|b|c)`。裸词是子串, 也会撞无关文本(如 `Dragon` 命中账号名 `dragon2`), 要词边界就上 `re:`。
+- `--case-sensitive`: **精确匹配开关**——本次运行所有文本匹配(裸词/`re:` 正则/黑名单/correlate 抽取)区分大小写, 解决"Dragon 撞 dragon2"这类误命中。**默认不敏感**(`--match ERROR` 能命中 `[Error]`, 黑名单 `DEBUG` 能滤 `[Debug]`——这两个场景别加此开关); 查级别词时也别加, 否则撞不到。
 - `-C N` 结合 `--match`: 每条命中行连带**前后各 N 行**。**`-C 5s`/`-C 1m` 按时间窗只在交互版可用** (`/context 5s` 或 TUI 内 `-C 5s`); agent 的 `-C` 只接受**行数**。
 - `--since 5m`: 只看最近一段时间(按日志自带时间戳), 跳过早期杂音; 以最新日志为参考, 历史日 `--date` 也能用。
 - `--level ERROR`: 只保留 >= 该级别的行; `--trace <词>`: 跨源纯净命中行(无邻居)。
