@@ -221,6 +221,21 @@ class TestDumpEdgeCases(unittest.TestCase):
         out, rc = dump_to(cfg)
         self.assertEqual((out.strip(), rc), ("", 0))
 
+    def test_backlog_timeout_warns(self):
+        """BUG0001 守护: 硬上限内 backlog 没读完必须 stderr 警告, 不装死."""
+        d = tempfile.mkdtemp(prefix="lt_backlog_")
+        log = os.path.join(d, "s.log")
+        with open(log, "w") as f:
+            f.write("[2026-08-27 10:00:00] hello\n")
+        cfg = Config(sources=[SourceConfig(
+            "s", "", "", dx=f"bash -c 'sleep 2 && echo {log}'")])
+        cfg.history = 10
+        buf, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(err):
+            rc = dump(cfg, None, 50, wait=0.5, hard_cap=0.8)   # dx 2s > 硬上限
+        self.assertEqual(rc, 0)
+        self.assertIn("未完成", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

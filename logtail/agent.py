@@ -25,6 +25,10 @@ from .reader import LogFollower
 from .rules import RulePatternError, Rule, RuleSet
 from .timeline import RingBuffer
 
+# dump 的 backlog(历史窗口)阶段硬上限 (秒): 信号驱动等待"各源读完全部历史行",
+# 只受此上限约束防挂死; --wait 只管 backlog 完成后的实时跟随期。
+DUMP_HARD_CAP = 30.0
+
 
 def format_line(ln) -> str:
     """把一条 LogLine 格式化为带前缀的单行 (与交互版一致, 无颜色转义)."""
@@ -136,8 +140,15 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
          since: Optional[float] = None, count_only: bool = False,
          exclude: Optional[str] = None, summary: bool = False,
          ctx_same: int = 0, as_json: bool = False,
-         focus: Optional[str] = None, correlate: Optional[str] = None) -> int:
+         focus: Optional[str] = None, correlate: Optional[str] = None,
+         hard_cap: float = DUMP_HARD_CAP) -> int:
     """收集最近若干行(经黑名单/可选 match/时间窗), 打印后退出.
+
+    收集分两阶段 (BUG0001: 大窗口下固定 --wait 会把"读不完"伪装成"没有"):
+    - backlog 阶段: 等各源把"定位起点->文件尾"的历史窗口全部消费完
+      (信号驱动, 只受 hard_cap 硬上限约束, 不受 --wait 限制);
+    - 实时阶段: backlog 完成后再跟随 wait 秒 (或约 1s 无新行提前返回),
+      --wait 的语义是"实时跟随时长", 不是总时长。
 
     context   > 0: 每条命中行连同**全局时间序**前后各 context 行一起输出。
     ctx_same  > 0: 每条命中行连同**同进程**前后各 ctx_same 行一起输出 (跳过其它进程的行)。
@@ -148,6 +159,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     count_only    : 只输出命中行数, 不打印正文 (快速判断是否爆发)。
     as_json       : 每行输出一个 JSON 对象 (NDJSON), 而非定宽文本。
     match / exclude: 逗号或空格分隔多词; exclude 命中则剔除。
+    hard_cap      : backlog 阶段的硬上限 (秒), 防挂死; 超限打 stderr 警告。
     """
     matchers = _build_match_rules(_split_terms(match))
     excludes = _build_exclude_rules(_split_terms(exclude))
@@ -177,31 +189,49 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     follower.start()
 
     seen: List = []
-    deadline = time.monotonic() + wait
+    hard_deadline = time.monotonic() + hard_cap   # backlog 阶段硬上限 (防挂死)
+    live_deadline = None                          # backlog 完成后: 实时跟随截止
     idle = 0
-    saw_batch = False        # 是否已收到过任何批 (区分"正在初始化"与"日志确已静默")
+    backlog_done = False
     try:
-        while time.monotonic() < deadline:
+        while True:
+            now = time.monotonic()
+            if now >= hard_deadline:
+                break
+            if live_deadline is not None and now >= live_deadline:
+                break
             batch = follower.queue.drain()
             if batch:
-                saw_batch = True
+                idle = 0
             for ln in batch:
                 # 黑名单 + 级别剔除 + (可选)单源聚焦 (match 在最后输出时再判, 这里先收集)
                 if (not blk.blocked(ln.text) and blk.level_ok(ln.level)
                         and (not focus or ln.source == focus)):
                     seen.append(ln)
-            if seen:
-                idle = 0
-            elif saw_batch:
-                idle += 1        # 已越过初始化、开始收到批 -> 才开始计空闲
+            # backlog 信号: 各源历史窗口读完 -> 进入实时跟随期 (给 wait 秒收新行)。
+            # 若中途又发现新文件 (dx 后到), 回到 backlog 阶段等它读完。
+            if follower.backlog_ready():
+                if live_deadline is None:
+                    live_deadline = time.monotonic() + wait
+                    backlog_done = True
             else:
-                idle = 0         # 尚未收到任何批 (如 dx 子进程尚未出首行), 耐心等待
-            if idle >= 20:       # ~1s 无有效行 (且已越过初始化), 提前退出
-                break
+                if live_deadline is not None:
+                    live_deadline = None
+                    backlog_done = False
+            if live_deadline is not None:
+                if not batch:
+                    idle += 1        # 实时期: ~1s 无新批提前退出
+                if idle >= 20:
+                    break
             time.sleep(0.05)
     finally:
         probe = follower.probe()   # stop() 会清空 _workers, 故先取
         follower.stop()
+
+    if not backlog_done:
+        # 硬上限内历史窗口没读完: 结果不完备, 必须明示而非伪装成"没有"
+        print(f"logtail: warning: 历史窗口读取未完成 ({hard_cap:g}s 硬上限内 backlog 未读完), "
+              f"结果可能不完整 —— 检查源是否极慢/文件是否超大", file=sys.stderr)
 
     seen.sort(key=lambda l: (l.ts_key, l.seq))
 

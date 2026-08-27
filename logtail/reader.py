@@ -111,13 +111,17 @@ def _last_timestamp(path: str) -> Optional[float]:
 class _FileFollower:
     """单个文件的跟踪状态."""
 
-    __slots__ = ("path", "inode", "offset", "closed")
+    __slots__ = ("path", "inode", "offset", "closed", "ever_caught_up")
 
     def __init__(self, path: str, inode: int, offset: int = 0) -> None:
         self.path = path
         self.inode = inode
         self.offset = offset
         self.closed = False
+        # 初始积压(start->EOF 的历史行)是否至少被完整消费过一次。
+        # dump 用它判断"历史窗口读完没": 新文件 offset<EOF 时为 False,
+        # 一次 _emit 追到文件尾后置 True (此后新增行属于实时跟随, 不算积压)。
+        self.ever_caught_up = False
 
 
 class _SourceWorker(threading.Thread):
@@ -133,6 +137,8 @@ class _SourceWorker(threading.Thread):
         self._files_discovered = 0      # 最近一次扫描发现的文件数
         self._ever_found = False        # 是否曾发现过文件
         self._dx_error = ""             # dx 失败原因 (空=正常)
+        self._scans = 0                 # 已完成的扫描轮数 (backlog_ready 要求 >=2,
+                                        # 给慢/抖动的 dx 两次发现机会)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -191,6 +197,17 @@ class _SourceWorker(threading.Thread):
             if not os.path.exists(path):
                 st.closed = True
                 del self._files[path]
+        self._scans += 1
+
+    def backlog_ready(self) -> bool:
+        """该源的初始积压(历史窗口)是否已读完.
+
+        条件: 至少完成 2 轮扫描 (给 dx 两次发现机会, 避免首轮抖动误判),
+        且当前跟踪的每个文件都曾把 offset 追到文件尾一次。
+        """
+        if self._scans < 2:
+            return False
+        return all(st.ever_caught_up for st in self._files.values())
 
     def probe_status(self) -> dict:
         """返回该源的发现诊断, 供 agent 区分"没日志"与"源压根没发现"."""
@@ -232,6 +249,9 @@ class _SourceWorker(threading.Thread):
 
         if size > existing.offset:
             self._emit(path, existing, inode, size)
+        elif not existing.ever_caught_up:
+            # 无新数据且 offset 已在文件尾 (如 since 定位到 EOF): 积压立即算读完
+            existing.ever_caught_up = True
 
     def _history_start(self, path: str, size: int) -> int:
         """返回文件开头到 '末 N 行' 起始处之间的字节数, 作为 offset.
@@ -336,6 +356,8 @@ class _SourceWorker(threading.Thread):
             tail = chunks.pop() if chunks else b""   # 不完整行留在文件, 下次拼接
             consumed = len(data) - len(tail)
         st.offset += consumed
+        if st.offset >= size:
+            st.ever_caught_up = True                # 本次已读到文件尾, 积压消费完
 
         for raw in chunks:
             raw = raw.rstrip(b"\r")
@@ -398,6 +420,10 @@ class LogFollower:
     def probe(self) -> List[dict]:
         """返回各源的发现诊断 (agent 用, 区分"没日志"与"源未发现")."""
         return [w.probe_status() for w in self._workers]
+
+    def backlog_ready(self) -> bool:
+        """全部源的初始积压(历史窗口)是否读完 (dump 的信号驱动退出条件)."""
+        return bool(self._workers) and all(w.backlog_ready() for w in self._workers)
 
     def diagnose(self) -> List[dict]:
         """只做发现探测, 不启动 tail 线程: 每源文件数 + dx 状态 + 最后日志时间戳.

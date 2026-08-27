@@ -88,7 +88,8 @@ class TestOutputContract(CliCase):
         """--help 必须与语义同步维护: 三层读取模型/上限/各 flag 作用域都要在."""
         r = self.cli("--help")
         for needle in ("三层读取模型", "8MB", "--date", "--correlate",
-                       "--ctx-same", "--focus", "--diagnose", "假阴性"):
+                       "--ctx-same", "--focus", "--diagnose", "假阴性",
+                       "硬上限", "读取未完成"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -301,6 +302,34 @@ class TestFilteringMatrix(CliCase):
         m = self.cli("--agent", "--config", cfg2, "--since", "2h",
                      "--wait", "3", "--match", "latefill", "--count")
         self.assertGreater(int(m.stdout.strip()), 0)
+
+    def test_dump_waits_for_backlog_with_slow_source(self):
+        """BUG0001 回归: 慢源(dx 要 2s)下, 默认 --wait(2s) 不得漏掉窗口历史行.
+
+        dump 必须"读到历史窗口全部消费完"再返回(信号驱动), --wait 只管
+        backlog 完成后的实时跟随期; 旧行为固定 deadline 在数据到达前就退出。
+        """
+        import time as _t
+        now = _t.time()
+        log = os.path.join(self.dir, "slow.log")
+        early_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 3000))
+        late_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 10))
+        with open(log, "w") as f:
+            for i in range(50):
+                f.write(f"[{early_ts}] walk marker {i}\n")
+            for i in range(50):
+                f.write(f"[{late_ts}] late padding {i}\n")
+        # dx 命令 sleep 2 再吐路径: 模拟慢发现源 (首条数据 ~2.5s 才到)
+        cfg2 = os.path.join(self.dir, "slow.yaml")
+        with open(cfg2, "w") as f:
+            f.write('log_sources:\n  - name: s\n    dx: "bash -c \'sleep 2 && '
+                    f'echo {log}\'"\nblacklist: []\n')
+        # 默认 --wait(2s), 不允许用户自己加大: 工具必须等到 backlog 读完
+        r = self.cli("--agent", "--config", cfg2, "--since", "1h",
+                     "--match", "walk", "--count")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(int(r.stdout.strip()), 50,
+                         f"慢源下漏读窗口历史行: {r.stdout!r} / {r.stderr[:300]!r}")
 
 
 class TestMonitor(CliCase):
