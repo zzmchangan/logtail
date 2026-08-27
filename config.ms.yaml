@@ -1,0 +1,43 @@
+# logtail 微服务专用配置 —— 查 ms 微服务(Team/Bar 等)时用, 去掉 DEBUG 黑名单
+#
+# 用途: 微服务日志几乎全为 [Debug] 级, 主 config.yaml 的黑名单 "DEBUG"(大小写不敏感)会把它们全滤掉,
+#       导致 --focus team/bar 显示为空(不是没日志)。查微服务时用本配置(不含 "DEBUG" 黑名单)。
+#
+# 配合 --config 切换: 查微服务用本文件, 查游戏大服用 config.yaml。
+#   logtail --config /data/workspace/logtail/config.ms.yaml --agent --focus team --since 5m
+#
+# 按需加其它微服务(都在 /data/vm-ro3-deploys/log/ms/ 下):
+#   avatar/friend/mail/login/party/pay/push/queue/rank/trade*/uuid..., 例:
+#   - name: mail
+#     path: /data/vm-ro3-deploys/log/ms/MailService
+#     pattern: "mail-service-*/mail_service.log"
+
+log_sources:
+  - name: team
+    path: /data/vm-ro3-deploys/log/ms/TeamService
+    pattern: "team-service-*/team_service.log"
+
+  # bar 暂不需要, 按需取消注释(同 team 都是微服务, 用本配置可读 [Debug] 级):
+  # - name: bar
+  #   path: /data/vm-ro3-deploys/log/ms/BarService
+  #   pattern: "bar-service-*/bar_service.log"
+
+# 微服务日志为 Debug 级? 这里刻意不放 "DEBUG", 否则滤掉全部。
+blacklist:
+  - "heartbeat"
+  - "keepalive"
+  - "timer_tick"
+  - "InspectUtils"
+
+keywords:
+  - "ERROR"
+  - "timeout"
+  - "Assert"
+
+# 关联键(同主配置): player 用 Guid:/roleId:/player: 三种写法兜底。
+correlation_keys:
+  - name: player
+    extract:
+      - "Guid[:=] *(\\d+)"
+      - "roleId[:=] *(\\d+)"
+      - "player[:=] *(\\d+)"

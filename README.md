@@ -134,6 +134,10 @@ correlation_keys:
 
 ### AI 排查工作流与坑（心得体会）
 
+**工作流铁律：先看代码，再调 config。** 排查前先读代码，初步确认涉及哪些服务器 / 关键字，再打开对应源——不要一上来就全量调日志。配置分两份：
+- `config.yaml`（主配置）：游戏大服用 dx 自动发现（scene/scenemgr/guild/match），微服务用 glob（team，在 `/ms/`）。默认只开开发常用服（scene/scenemgr/guild/match/team）；auction/public/http/activity/relation/bar 为低频服**注释**，涉及对应 bug 时取消注释。
+- `config.ms.yaml`（微服务专用）：**去掉了 `DEBUG` 黑名单**。因为 Team/Bar 等微服务日志几乎全为 `[Debug]` 级，主配置的黑名单 `"DEBUG"`（大小写不敏感）会把它们全滤掉、`--focus team` 显示为空（不是没日志）。查微服务时用 `--config config.ms.yaml` 切过来。
+
 **一个连贯的排查闭环**（probe → narrow → expand → conclude），每环都有便宜、可组合的工具：
 - **probe**：`--count --since 5m` 探是否爆发；`--diagnose` 确认源活着。
 - **narrow**：`--match <词>` 或 `--correlate player=<id>` 收窄到实体。

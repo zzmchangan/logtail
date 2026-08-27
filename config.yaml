@@ -1,18 +1,69 @@
 # logtail 正式配置 —— RO3 服务器日志聚合(集群 131189)
 #
-# 三个服务通过 dx 工具自动发现日志文件路径, 无需手工维护具体文件名。
-# 日志按天分文件, 由 dx 每次解析出当天最新路径; 工具轮询时会重新跑 dx,
-# 跨天/轮转后自动跟到新文件。
+# 两种日志源模式:
+#   dx 模式   : 用 `dx log <svc> <cluster>` 自动发现当天文件路径(按天分文件, 自动轮转)。
+#               dx 模式不校验目录; 适用于游戏大服(scene/guild/match/auction/public/http/activity/scenemgr/relation)。
+#   glob 模式 : 直接 `path` + `pattern` 匹配, 适用于 dx 抓不到的微服务日志(在 /ms/ 根, 非集群 131189 目录)。
+#               glob 模式会校验 path 目录存在(目录不存在会报配置错误, 不含则删掉对应源)。
+#   TeamServer/BarServer 的日志在 /data/vm-ro3-deploys/log/ms/(TeamService/BarService),
+#   `dx log TeamServer 131189` 抓不到, 所以用 glob 直连。
+#
+# ⚠️ Agent 使用提示 (工作流铁律):
+#   - 【先看代码, 再调 config】排查前先读代码, 初步确认涉及哪些服务器/关键字, 再打开对应源。
+#     默认只开开发常用服 (scene/scenemgr/guild/match/team), 其余低频服注释、按需放开。
+#   - 先跑 `--diagnose` 看每个源是否被发现(files/discovered/dx_error), 再信 "0 命中";
+#   - 各源 source(name) 用作输出前缀与 --focus; 与 dx 服务名是两个东西, 别混淆;
+#   - 支持功能/筛选/输出详见 `--help`(如 --focus/--correlate/--ctx-same/--json/--summary/--since)。
 
+# 别名(name) -> 服务 对照:
+#   scene=SceneServer(多实例 dungeon-0/main-0) / scenemgr=SceneMgrServer / guild=GuildServer
+#   auction=AuctionServer / public=PublicServer / http=HttpServer / match=MatchServer
+#   activity=ActivityServer / relation=RelationServer / team=TeamService(ms) / bar=BarService(ms)
 log_sources:
-  - name: SceneServer            # SceneServer 多实例 (dungeon-0 / main-0), 输出前缀统一为 scene
+  - name: scene
     dx: "dx log SceneServer 131189"
 
-  - name: GuildServer            # GuildServer 单实例
+  - name: scenemgr
+    dx: "dx log SceneMgrServer 131189"
+
+  - name: guild
     dx: "dx log GuildServer 131189"
 
-  - name: MatchServer            # MatchServer 单实例
+  # 低频调试服: 涉及对应 bug 时取消注释(遵循"先看代码确定涉及哪些服, 再开对应源")。
+  # - name: auction
+  #   dx: "dx log AuctionServer 131189"
+  # - name: public
+  #   dx: "dx log PublicServer 131189"
+  # - name: http
+  #   dx: "dx log HttpServer 131189"
+
+  - name: match
     dx: "dx log MatchServer 131189"
+
+  # - name: activity
+  #   dx: "dx log ActivityServer 131189"
+  # - name: relation
+  #   dx: "dx log RelationServer 131189"
+
+  # 微服务日志在 /data/vm-ro3-deploys/log/ms/(TeamService/BarService), dx 抓不到 -> 用 glob。
+  # 多实例: team-service-{0,1}/team_service.log; glob 的 path 必须存在(配置会校验)。
+  # ⚠️ 这些微服务日志几乎全为 [Debug] 级, 会被黑名单 "DEBUG"(大小写不敏感)滤掉,
+  #    查它们时需临时把 "DEBUG" 从 blacklist 移除, 否则 --focus team/bar 会显示为空(不是没日志)。
+  - name: team
+    path: /data/vm-ro3-deploys/log/ms/TeamService
+    pattern: "team-service-*/team_service.log"
+
+  # bar 暂不需要, 按需取消注释(同 team 一样是微服务, 去 DEBUG 黑名单查):
+  # - name: bar
+  #   path: /data/vm-ro3-deploys/log/ms/BarService
+  #   pattern: "bar-service-*/bar_service.log"
+
+  # SeasonServer 本集群无日志(全库未找到), 需要时按 glob 补一条, 例:
+  # - name: season
+  #   path: /data/vm-ro3-deploys/log/ms/SeasonService
+  #   pattern: "season-service-*/season_service.log"
+  # ms/ 下还有大量其他微服务(avatar/friend/mail/login/party/pay/push/queue/rank/trade*/uuid...),
+  # 排查相关 bug 时按上面的 glob 模式按需加一两条即可。
 
 # 黑名单: 命中则丢弃该日志行(采集阶段应用)。
 # 裸词 = 大小写不敏感子串匹配; "re:" 前缀 = 正则表达式(同样大小写不敏感)。
