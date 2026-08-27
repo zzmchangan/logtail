@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  --wait(dump) 自收到首条有效行后约 1s 无新行才提前返回(初始化期不提前, 会等到 --wait)。\n"
             "  --ctx-same N 仅 agent+match(同进程上下文, 与 -C 全局互补); --diagnose 独立健康检查(不 tail)。\n"
             "  --focus <源名> 单源聚焦(按配置源名筛, dx/glob 均有效, 与 --ctx-same 互补)。\n"
+            "  --correlate key=value 关联键(抽取+归一化跨源对齐; 未定义 key 回退字面子串);\n"
+            "  --summary 的 correlate 自报 lines_with_key 用于判断正则是否写歪/key 是否有区分度。\n"
         ),
     )
     p.add_argument("--config", "-c", default=None,
@@ -68,6 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="实体追踪: 只显示所有源中含该词的干净命中行 (无邻居行); 交互 /trace 与 agent 均可用")
     p.add_argument("--focus", default=None,
                    help="单源聚焦: 只输出指定来源 (name) 的行, 如 --focus scene; dx/glob 源均有效")
+    p.add_argument("--correlate", default=None,
+                   help="按关联键对齐: 跨源只留抽出该 id 的行, 如 --correlate player=123; "
+                        "key 在 config correlation_keys/预设里=抽取+归一化, 未定义=回退字面 --trace")
     p.add_argument("--since", default=None,
                    help="只看最近一段时间 (如 5m/1h/30s), 按日志自带时间戳过滤; "
                         "交互与 agent 模式均可用。排查服务器启动报错时回看启动窗口。")
@@ -132,7 +137,8 @@ def main(argv=None) -> int:
             if args.agent_mode == "monitor":
                 return monitor(cfg, args.match, args.lines,
                                exclude=args.exclude, summary=args.summary,
-                               as_json=args.as_json, focus=args.focus)
+                               as_json=args.as_json, focus=args.focus,
+                               correlate=args.correlate)
             # dump: --context/-C 可当作命中行的上下文窗口 (结合 --match 用)
             # --trace 作为 match 但零上下文 (纯命中行, 无邻居)
             match = args.trace if args.trace else args.match
@@ -141,7 +147,8 @@ def main(argv=None) -> int:
                         context=ctx, since=since,
                         count_only=args.count, exclude=args.exclude,
                         summary=args.summary, ctx_same=args.ctx_same,
-                        as_json=args.as_json, focus=args.focus)
+                        as_json=args.as_json, focus=args.focus,
+                        correlate=args.correlate)
         except RulePatternError as exc:
             print(f"logtail: --match 规则错误: {exc}", file=sys.stderr)
             return 2

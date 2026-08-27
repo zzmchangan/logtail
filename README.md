@@ -86,6 +86,9 @@ python -m logtail --diagnose --config config.yaml
 # 单源聚焦: 只看 scene 这个进程的行 (按配置里的源名筛, dx/glob 源均有效)
 python -m logtail --agent --config config.yaml --focus scene --since 5m
 
+# 关联键: 跨进程跟一条逻辑链路 (同一 id 不同写法也能串起来)
+python -m logtail --agent --config config.yaml --correlate player=123 --since 5m
+
 # 持续监控: 把过滤后的日志持续打 stdout (Ctrl+C 停止)
 python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 ```
@@ -98,6 +101,19 @@ python -m logtail --agent --mode monitor --config config.yaml --match ERROR
 - `--json`: 每行输出一个 JSON 对象 (`ts`/`ts_seconds`/`source`/`level`/`text`/`seq`), 供编程级加工; 仍走同一套过滤管线。
 - `--diagnose`: **只做发现健康检查**(不 tail 不读正文), 输出 JSON: 每源 `files`/`discovered`/`dx_error`/`latest_ts`。
 - `--focus <源名>`: **单源聚焦**——只输出指定来源的行(按配置里的源名筛, dx/glob 源均有效), 与 `--ctx-same` 互补看单进程。
+- `--correlate <key>=<value>`: **关联键**——跨进程按共享标识对齐: 用 `correlation_keys` 配置(或内置预设 `player`/`session`)的正则从每行**抽取** id、**归一化**(去空白/前导零)后比对, 只留匹配行, 全局时间排序。解决"同一 id 在不同进程打印成 `player=123`/`RoleId:123`/`guid:123` 串不起来"的问题。未定义 key 回退字面子串(同 `--trace`)。
+
+配置 `correlation_keys`(每个 key 一组正则, 第一个命中即取):
+```yaml
+correlation_keys:
+  - name: player
+    extract:
+      - "Guid[:=] *(\\d+)"        # [Player Guid:1276679028765 ...]
+      - "roleId[:=] *(\\d+)"
+      - "player[:=] *(\\d+)"
+```
+
+**关联键自报**(诚实提醒): `--summary` 的 JSON 含 `correlate: {key, value, lines_total, lines_with_key, matched}`。`lines_with_key==0` 会另打 stderr 警告(正则写歪/该 id 不存在); `lines_with_key` 接近 `lines_total` 说明该 key **没有区分度**(如某 token 是全服常量, 每行都有)——换更精确的 key。跨进程能串起来的前提是那个 id 在多个进程都真实出现; 只在单进程出现时 correlate 退化为单进程故事, 不亏但别指望跨进程。
 - `--count`: 只输出命中行数 (经 黑名单/级别/match/exclude 过滤后), 快速判断这段时是否爆发。
 - 黑名单**始终生效**; 不带 `--match`/`-C` 时输出黑名单过滤后的全部最近 N 行。
 - Agent 修 bug 的用法: 先 `--match` 收窄到错误行 → `-C` 补上下文 → `--since` 限时间段 → `re:` 正则再收窄 → 拿到极少量却完整的线索。

@@ -26,6 +26,7 @@ class Config:
     sources: List[SourceConfig] = field(default_factory=list)
     blacklist: List[str] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
+    correlation_keys: List[dict] = field(default_factory=list)
 
     # CLI 覆盖项 (不写回配置, 仅本次运行生效)
     history: int = 0
@@ -116,6 +117,9 @@ def load_config(path: Optional[str], date: str = "") -> Config:
     bls = data.get("blacklist", []) or []
     cfg.keywords = [str(k) for k in keys]
     cfg.blacklist = [str(b) for b in bls]
+
+    cks = data.get("correlation_keys", []) or []
+    cfg.correlation_keys = [dict(k) for k in cks if isinstance(k, dict)]
     return cfg
 
 
