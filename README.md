@@ -232,7 +232,6 @@ logtail --agent --config config.yaml --blacklist-del debug --focus team --since 
 | `/blacklist <规则> [<规则>...]` | `/bl` | 临时添加黑名单 (可一次多个) |
 | `/unblacklist <规则> [<规则>...]` | `/ubl` | 移除黑名单 (可一次多个) |
 | `/list` | —— | 显示当前高亮词、黑名单、级别、模式 |
-| `/copy [N]` | —— | **把缓冲区最近 N 行(默认 50)送进剪贴板**(OSC 52 经 SSH 推到本地终端剪贴板, VSCode/kitty/iTerm2/WT 支持); 不支持时写 `/tmp/logtail_copy.txt` 兜底——curses 里没法选中复制, 用这条 |
 | `/less` | —— | **用 less 分页器查看整个滚动缓冲**——退出 curses 后原生拖选复制、`/` 搜索全可用, `q` 返回 TUI。不依赖终端特性, 最稳的复制方式; 部分终端里 Shift+拖拽也能原生选中 |
 | `/save` | —— | **把当前高亮词 & 黑名单写回配置文件** (仅此命令落盘; 保留注释与其余字段) |
 | `/reset` | —— | **重读配置文件**后重置规则+清空缓冲+重新跟踪 (中途 `/save` 过也能正确回退) |
