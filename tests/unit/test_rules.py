@@ -42,6 +42,28 @@ class TestRuleSetCrud(unittest.TestCase):
         self.assertFalse(r.remove("a", "highlight"))                # 已不在
         self.assertEqual([x.pattern for x in r.list_highlights()], ["b"])
 
+    def test_remove_case_insensitive(self):
+        """/rm 移除应与默认匹配一样大小写不敏感: remove("error") 应删掉 "ERROR"."""
+        r = rs(k=["ERROR", "timeout"])
+        n = r.remove("error", "highlight")          # 大小写不同也能删
+        self.assertEqual(n, 1)
+        self.assertNotIn("ERROR", [x.pattern for x in r.list_highlights()])
+        self.assertIn("timeout", [x.pattern for x in r.list_highlights()])
+
+    def test_remove_all_case_variants(self):
+        """同一关键词的大小写变体应一起删掉, 不留冗余规则."""
+        r = rs(k=["ERROR", "error", "ok"])
+        n = r.remove("eRrOr", "highlight")
+        self.assertEqual(n, 2)
+        self.assertEqual([x.pattern for x in r.list_highlights()], ["ok"])
+
+    def test_remove_respects_case_sensitive(self):
+        """case_sensitive 配置下移除按精确匹配, 不误删大小写不同的规则."""
+        r = RuleSet(keywords=["Dragon", "dragon2"], case_sensitive=True)
+        self.assertEqual(r.remove("dragon", "highlight"), 0)        # 精确才删
+        self.assertEqual(r.remove("Dragon", "highlight"), 1)
+        self.assertEqual([x.pattern for x in r.list_highlights()], ["dragon2"])
+
     def test_clear_kind(self):
         r = rs(k=["a"], b=["x"])
         self.assertEqual(r.clear("highlight"), 1)

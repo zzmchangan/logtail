@@ -113,9 +113,20 @@ class RuleSet:
         self._rules[key] = rule
         return rule
 
-    def remove(self, pattern: str, kind: str) -> bool:
-        """按原始字符串移除规则, 返回是否真的移除了."""
-        return self._rules.pop((kind, pattern), None) is not None
+    def remove(self, pattern: str, kind: str) -> int:
+        """移除某用途下所有与 pattern 相同的规则, 返回移除条数 (0 = 没删到).
+
+        默认匹配大小写不敏感, 移除也应大小写不敏感 —— 否则 /rm ERROR 打成
+        error 会报"未找到", 与"匹配不分大小写"不一致。case_sensitive 配置时
+        则精确匹配。同一关键词的大小写变体会被一起清掉, 不留冗余规则。
+        """
+        if self._case_sensitive:
+            return 1 if self._rules.pop((kind, pattern), None) is not None else 0
+        low = pattern.lower()
+        to_pop = [k for k in self._rules if k[0] == kind and k[1].lower() == low]
+        for k in to_pop:
+            del self._rules[k]
+        return len(to_pop)
 
     def clear(self, kind: str) -> int:
         """清空某一用途的全部规则, 返回移除了多少条."""

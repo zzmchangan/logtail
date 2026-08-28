@@ -6,7 +6,7 @@
 
 命令在输入行里解析执行, 支持 /keyword /k、/clear、/remove、-C N、/context N、
 /all、/pause、/resume、/blacklist、/unblacklist、/list、/save、/reset、
-/help、/quit 与 Ctrl+C。
+/help、/quit|/q 与 Ctrl+C。
 """
 
 from __future__ import annotations
@@ -256,6 +256,8 @@ class Tui:
         n_kw = len(self.ruleset.list_highlights())
         search_marker = f"  /{self.search_pat}{self.search_idx if self.search_idx>=0 else '×'} n/N↑↓" if self.search_active else ""
         status = f" mode={mode} hl={n_kw} lines={total}{pause_marker}{freeze_marker}{search_marker}   {msg}"
+        status = strip_nul(status)
+        buf = strip_nul(buf)
         try:
             stdscr.addnstr(h - 2, 0, status[: w - 1], w - 1,
                            curses.A_REVERSE if self.paused else 0)
@@ -294,6 +296,7 @@ class Tui:
 
     def _render_display_row(self, stdscr, row, prefix, seg, hl_rules, dim, w,
                             level="", is_hit=False) -> None:
+        prefix = strip_nul(prefix) if prefix is not None else None
         base = curses.A_DIM if (dim and self.has_color) else 0
         hit_attr = curses.A_REVERSE if is_hit else 0        # 搜索命中行反显
         start_x = 0
@@ -336,6 +339,7 @@ class Tui:
     def _render_highlighted(self, stdscr, row, start_x, seg, hl_rules,
                             dim, w, is_hit=False) -> None:
         """把已折行的 seg 从 start_x 起渲染; 命中高亮词着色, 搜索命中行整体反显."""
+        seg = strip_nul(seg)               # NUL 会让 addnstr 抛 ValueError
         body_w = max(0, w - 1 - start_x)
         if body_w <= 0:
             return
@@ -449,6 +453,13 @@ class Tui:
         if key == curses.KEY_NPAGE:         # 下翻一页
             nxt = min(cur_top + log_h, max_top)
             self.view_top = None if nxt >= max_top else nxt
+            return None, buf, ""
+        if key == 6:                        # Ctrl-F: 下翻一页 (vim 习惯, 同 PgDn)
+            nxt = min(cur_top + log_h, max_top)
+            self.view_top = None if nxt >= max_top else nxt
+            return None, buf, ""
+        if key == 2:                        # Ctrl-B: 上翻一页 (vim 习惯, 同 PgUp)
+            self.view_top = max(0, cur_top - log_h)
             return None, buf, ""
         if key == curses.KEY_HOME:          # 跳到最顶
             self.view_top = 0
@@ -605,7 +616,7 @@ _KNOWN_COMMANDS = {
     "/keyword", "/k", "/clear", "/clr", "/remove", "/rm",
     "-C", "/context", "/ctx", "/all", "--all",
     "/pause", "/resume", "/blacklist", "/bl", "/unblacklist", "/ubl",
-    "/level", "/trace", "/list", "/save", "/reset", "/help", "/?", "/quit",
+    "/level", "/trace", "/list", "/save", "/reset", "/help", "/?", "/quit", "/q",
     "/less",
 }
 
@@ -658,7 +669,7 @@ def _run_command(tui: Tui, raw: str) -> str:
         return _reset(tui)
     if head in ("/help", "/?"):
         return _HELP
-    if head == "/quit":
+    if head in ("/quit", "/q"):
         raise SystemExit(0)
     return f"未知命令: {head!r}  (输入 /help 查看帮助)"
 
@@ -877,8 +888,8 @@ _HELP = (
     " | /remove|/rm 词 移除 | /clear|/clr 清空全部\n"
     "显示: -C|/context|/ctx N 上下文前后N行 | /all|--all 全量 | /pause /resume 暂停/恢复\n"
     "过滤: /blacklist|/bl 规则 [规则...] 加黑名单(支持 re:) | /unblacklist|/ubl 移除\n"
-    "滚动: ↑↓逐行 PgUp/PgDn翻页 Home/g最顶 End/G最底 滚轮上/下 回车跳最新\n"
-    "配置: /list 状态 | /save 写回配置(仅此命令落盘) | /reset 重读配置重开 | /help | /quit|Ctrl+C\n"
+    "滚动: ↑↓逐行 PgUp/PgDn或Ctrl-B/Ctrl-F翻页 Home/g最顶 End/G最底 滚轮上/下 回车跳最新\n"
+    "配置: /list 状态 | /save 写回配置(仅此命令落盘) | /reset 重读配置重开 | /help | /quit|/q|Ctrl+C\n"
     "复制: /less 分页器查看缓冲(原生选择/搜索, q返回; 部分终端 Shift+拖拽也可原生选中)"
 )
 
@@ -897,6 +908,21 @@ def char_width(ch: str) -> int:
         return 1
     # East Asian Wide / Fullwidth 视为宽字符
     return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def strip_nul(text: str) -> str:
+    """去掉字符串里的 NUL 字节 (\\x00), 供进入 curses 渲染前调用.
+
+    日志字节里可能出现 NUL (二进制垃圾/结构数据), 而 NUL 是合法 UTF-8 字符,
+    会在 reader 的 decode(errors="replace") 中原样穿透进 LogLine.text。
+    curses 的 addnstr 遇到内嵌 NUL 会抛 ValueError: embedded null character,
+    让整个 TUI 崩溃。这里在渲染边界剥掉 NUL:
+      - 只影响显示, 不修改 LogLine.text 数据源;
+      - 因此 agent / --json / stdout 契约完全不受影响。
+    """
+    if "\x00" not in text:
+        return text
+    return text.replace("\x00", "")
 
 
 def wrap_text(text: str, width: int) -> List[str]:

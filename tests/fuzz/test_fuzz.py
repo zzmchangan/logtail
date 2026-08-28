@@ -97,14 +97,14 @@ class TestRulesFuzz(unittest.TestCase):
     def test_ruleset_random_ops(self):
         rng = random.Random(SEED + 3)
         rs = RuleSet()
-        alive = set()
+        alive = set()          # 镜像: remove 大小写不敏感(会清掉所有大小写变体), 故按小写记账
         for _ in range(3000):
             op = rng.random()
             w = rand_text(rng, 8).strip() or "x"
             try:
                 if op < 0.4:
                     rs.add(w, "highlight")
-                    alive.add(w)
+                    alive.add(w.lower())
                 elif op < 0.6 and alive:
                     w = rng.choice(sorted(alive))
                     rs.remove(w, "highlight")
@@ -117,8 +117,10 @@ class TestRulesFuzz(unittest.TestCase):
                     rs.highlights(t)
             except RulePatternError:
                 pass
-            # 不变量: 高亮规则集合与本地镜像一致
-            self.assertEqual({r.pattern for r in rs.list_highlights()}, alive)
+            # 不变量: 高亮规则集合(小写) 与本地镜像(小写)一致。
+            # 因 remove 大小写不敏感, 两个大小写不同但同词的规则会被一起删掉,
+            # 镜像也按小写去重, 两侧保持一致。
+            self.assertEqual({r.pattern.lower() for r in rs.list_highlights()}, alive)
 
 
 class TestCorrelateFuzz(unittest.TestCase):

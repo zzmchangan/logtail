@@ -30,6 +30,22 @@ class TestDispatch(unittest.TestCase):
         msg = tui._dispatch("/somekeyword", "")
         self.assertIn("搜索", msg)                          # 非命令仍走搜索
 
+    def test_quit_aliases_registered(self):
+        """/quit 与 /q 都应登记, 走命令分支而非搜索分支."""
+        self.assertIn("/quit", _KNOWN_COMMANDS)
+        self.assertIn("/q", _KNOWN_COMMANDS)
+
+    def test_q_quits(self):
+        """/q 作为 /quit 别名直接退出 (SystemExit)."""
+        tui = make_tui()
+        with self.assertRaises(SystemExit):
+            tui._dispatch("/q", "")
+
+    def test_quit_quits(self):
+        tui = make_tui()
+        with self.assertRaises(SystemExit):
+            tui._dispatch("/quit", "")
+
 
 if __name__ == "__main__":
     unittest.main()
