@@ -49,7 +49,7 @@ def monitor(*args):
 
 
 C = ["--agent", "--config", CFG, "--wait", "1", "--lines", "50"]
-F = ["--since", "24h"]
+F = ["--since", "8760h"]
 fails = []
 
 

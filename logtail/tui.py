@@ -11,12 +11,16 @@
 
 from __future__ import annotations
 
+import base64
 import curses
 import os
+import subprocess
+import time
 import unicodedata
 from typing import List, Optional, Sequence, Tuple
 
 from . import __version__
+from .agent import format_line
 from .config import Config, ConfigError, load_config, save_config
 from .models import PALETTE_FG_COLORS, ColorPool, fmt_hhmmss
 from .reader import LogFollower
@@ -591,6 +595,28 @@ class Tui:
 _EXECUTORS = {}
 
 
+def copy_to_clipboard(text: str, path: str = "/tmp/logtail_copy.txt"):
+    """把 text 送进剪贴板: OSC 52 转义(经 SSH 推到本地终端剪贴板) + 文件兜底.
+
+    返回 (osc52_ok, path)。OSC 52 需终端支持(VSCode/kitty/iTerm2/Windows Terminal);
+    不支持或写不进 tty 时, 文件兜底永远可用(从文件里复制)。
+    """
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError:
+        path = ""
+    osc52_ok = False
+    try:
+        b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        with open("/dev/tty", "w") as tty:
+            tty.write(f"\x1b]52;c;{b64}\x07")
+        osc52_ok = True
+    except OSError:
+        pass
+    return osc52_ok, path
+
+
 def command(name):
     def deco(fn):
         _EXECUTORS[name] = fn
@@ -646,6 +672,10 @@ def _run_command(tui: Tui, raw: str) -> str:
         return _set_trace(tui, parts)
     if head == "/list":
         return _list(tui)
+    if head == "/copy":
+        return _copy(tui, parts)
+    if head == "/less":
+        return _less(tui)
     if head == "/save":
         return _save(tui)
     if head == "/reset":
@@ -783,6 +813,60 @@ def _set_level(tui: Tui, parts) -> str:
     return f"级别过滤: 只保留 >= {arg.upper()} 的行"
 
 
+def _copy(tui: Tui, parts) -> str:
+    """/copy [N]: 把缓冲区最近 N 行(默认 50)送进剪贴板(OSC 52) + /tmp 文件兜底."""
+    n = 50
+    if len(parts) >= 2:
+        try:
+            n = max(1, int(parts[1]))
+        except ValueError:
+            return f"N 必须是整数: {parts[1]!r} (用法: /copy [N])"
+    lines = [format_line(ln) for ln, _ in tui.timeline.ring.tail(n)]
+    if not lines:
+        return "缓冲区为空, 没有可复制的内容"
+    text = "\n".join(lines)
+    osc52_ok, path = copy_to_clipboard(text)
+    if osc52_ok:
+        return f"已复制最近 {len(lines)} 行到剪贴板 (OSC 52)" + (
+            f"; 兜底文件 {path}" if path else "")
+    return (f"终端不支持 OSC 52, 已写入 {path} (从文件复制); "
+            f"共 {len(lines)} 行")
+
+
+def _less(tui: Tui) -> str:
+    """/less: 用分页器查看整个滚动缓冲 —— 原生选择/复制/搜索全可用, q 返回 TUI.
+
+    curses 全屏模式下终端选择被吞; 退出 curses 交给 less 后就是普通终端文本,
+    拖选复制、less 内 / 搜索都行。比 OSC 52 不依赖终端特性, 最稳。
+    """
+    lines = [format_line(ln) for ln, _ in tui.timeline.ring]
+    if not lines:
+        return "缓冲区为空"
+    path = "/tmp/logtail_view.txt"
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines))
+    except OSError as exc:
+        return f"写临时文件失败: {exc}"
+    screen = tui.screen
+    try:
+        curses.endwin()                     # 退出 curses, 回到普通终端
+    except curses.error:
+        pass
+    try:
+        subprocess.run(["less", "-R", path], check=False)
+    except FileNotFoundError:
+        return f"系统没有 less; 缓冲已写到 {path}"
+    finally:
+        if screen is not None:
+            try:
+                screen.redrawwin()
+                screen.refresh()            # 恢复 curses 画面
+            except curses.error:
+                pass
+    return f"less 已退出 (共 {len(lines)} 行; 文件保留在 {path})"
+
+
 def _list(tui: Tui) -> str:
     hl = tui.ruleset.list_highlights()
     bl = tui.ruleset.list_blacklist()
@@ -838,7 +922,8 @@ _HELP = (
     "显示: -C|/context|/ctx N 上下文前后N行 | /all|--all 全量 | /pause /resume 暂停/恢复\n"
     "过滤: /blacklist|/bl 规则 [规则...] 加黑名单(支持 re:) | /unblacklist|/ubl 移除\n"
     "滚动: ↑↓逐行 PgUp/PgDn翻页 Home/g最顶 End/G最底 滚轮上/下 回车跳最新\n"
-    "配置: /list 状态 | /save 写回配置(仅此命令落盘) | /reset 重读配置重开 | /help | /quit|Ctrl+C"
+    "配置: /list 状态 | /save 写回配置(仅此命令落盘) | /reset 重读配置重开 | /help | /quit|Ctrl+C\n"
+    "复制: /copy [N] 最近N行进剪贴板(OSC52+文件兜底) | /less 分页器查看缓冲(原生选择/搜索,q返回)"
 )
 
 
