@@ -166,12 +166,19 @@ class _SourceWorker(threading.Thread):
         if self.src.dx:
             now = time.monotonic()
             if now < self._dx_cache[0]:
-                return self._dx_cache[1]
-            paths = self._dx_paths()
-            self._dx_cache = (now + DX_TTL, paths)
-            return paths
-        pattern = os.path.join(self.src.path, self.src.pattern)
-        return glob.glob(pattern)
+                paths = self._dx_cache[1]
+            else:
+                paths = self._dx_paths()
+                self._dx_cache = (now + DX_TTL, paths)
+        else:
+            pattern = os.path.join(self.src.path, self.src.pattern)
+            paths = glob.glob(pattern)
+        # 源级 filter: 按路径子串过滤(大小写不敏感), 区分同服务的不同实例
+        # (如 SceneServer 的 main=野外 / dungeon=副本)
+        if self.src.filter:
+            low = self.src.filter.lower()
+            paths = [p for p in paths if low in p.lower()]
+        return paths
 
     def _dx_paths(self) -> List[str]:
         try:

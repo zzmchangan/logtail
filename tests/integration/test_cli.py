@@ -71,7 +71,7 @@ class CliCase(unittest.TestCase):
         """agent dump 基础参数: 全量窗口."""
         return self.cli("--agent", "--config", self.cfg,
                         "--wait", "1", "--lines", "50",
-                        "--since", "24h", *extra)
+                        "--since", "8760h", *extra)
 
     def sources_of(self, out):
         return {l.split("] ")[1].split()[0] for l in out.strip().splitlines() if l}
@@ -210,7 +210,7 @@ class TestFilteringMatrix(CliCase):
             f.write(f"log_sources:\n  - name: s\n    path: {self.dir}\n"
                     f'    pattern: "guild*.log"\nblacklist: ["DEBUG"]\n')
         base = ["--agent", "--config", cfg_cs, "--wait", "1",
-                "--lines", "50", "--since", "24h"]
+                "--lines", "50", "--since", "8760h"]
         r = self.cli(*base)
         self.assertNotIn("detail dump", r.stdout)                 # 不敏感: [Debug] 行被滤
         r = self.cli(*base, "--case-sensitive")
@@ -279,7 +279,7 @@ class TestFilteringMatrix(CliCase):
         with open(cfg2, "w") as f:
             f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
                     f'    pattern: "keep.log"\nblacklist: []\n')
-        base = ["--agent", "--config", cfg2, "--wait", "1", "--since", "24h"]
+        base = ["--agent", "--config", cfg2, "--wait", "1", "--since", "8760h"]
         # 默认 tail: --lines 3 只留最后的刷屏段 (登录起点被吃掉)
         r = self.cli(*base, "--lines", "3")
         self.assertNotIn("auth", r.stdout)
@@ -339,7 +339,7 @@ class TestFilteringMatrix(CliCase):
             f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
                     f'    pattern: "allow.log"\nblacklist: ["DEBUG", "heartbeat"]\n')
         base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50",
-                "--since", "24h"]
+                "--since", "8760h"]
         # 默认: DEBUG 黑名单滤掉 [Debug] 行
         r = self.cli(*base)
         self.assertNotIn("ms detail", r.stdout)
@@ -367,7 +367,7 @@ class TestFilteringMatrix(CliCase):
             f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
                     f'    pattern: "bl.log"\nblacklist: ["DEBUG", "heartbeat"]\n')
         base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50",
-                "--since", "24h"]
+                "--since", "8760h"]
         # --blacklist-del DEBUG: 等价 --allow debug (移除指定项, 其余仍滤)
         r = self.cli(*base, "--blacklist-del", "DEBUG")
         self.assertIn("ms detail", r.stdout)
@@ -400,7 +400,7 @@ class TestFilteringMatrix(CliCase):
             f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
                     f'    pattern: "bl2.log"\nblacklist: ["DEBUG"]\n')
         r = self.cli("--agent", "--config", cfg2, "--wait", "1",
-                     "--lines", "50", "--since", "24h",
+                     "--lines", "50", "--since", "8760h",
                      "-s", f"ms:{d}:bl2.log", "--no-blacklist", "--focus", "ms")
         self.assertEqual(r.returncode, 0)
         self.assertIn("ms detail", r.stdout)                       # [Debug] 行放行
@@ -428,7 +428,7 @@ class TestFilteringMatrix(CliCase):
             f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
                     f'    pattern: "huge.log"\nblacklist: []\n')
         base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50",
-                "--since", "24h"]
+                "--since", "8760h"]
         # 默认不截断
         r = self.cli(*base)
         self.assertIn(huge[:200], r.stdout)
@@ -463,7 +463,7 @@ class TestFilteringMatrix(CliCase):
                     f"  - name: beta\n    path: {d}\n    pattern: \"dis.log\"\n"
                     f"    enabled: false\nblacklist: []\n")
         base = ["--agent", "--config", cfg2, "--wait", "1", "--lines", "50",
-                "--since", "24h"]
+                "--since", "8760h"]
         # 默认: enabled:false 源不采集
         r = self.cli(*base)
         self.assertIn("enabled source line", r.stdout)
@@ -505,7 +505,7 @@ class TestFilteringMatrix(CliCase):
         with open(cfg2, "w") as f:
             f.write('log_sources:\n  - name: s\n    dx: "bash -c \'sleep 3 && '
                     f'echo {d}/wide.log\'"\nblacklist: []\n')
-        r = self.cli("--agent", "--config", cfg2, "--since", "24h",
+        r = self.cli("--agent", "--config", cfg2, "--since", "8760h",
                      "--wait", "0", "--lines", "10")
         self.assertEqual(r.returncode, 0)
         self.assertIn("分段", r.stderr)                         # 宽窗护栏提示
@@ -520,7 +520,7 @@ class TestFilteringMatrix(CliCase):
             f.write('log_sources:\n  - name: s\n    dx: "bash -c \'sleep 3 && '
                     f'echo {d}/hc.log\'"\nblacklist: []\n')
         # hard-cap 0.5s < dx 3s -> 未完成警告(快速失败)
-        r = self.cli("--agent", "--config", cfg2, "--since", "24h",
+        r = self.cli("--agent", "--config", cfg2, "--since", "8760h",
                      "--hard-cap", "0.5")
         self.assertEqual(r.returncode, 0)
         self.assertIn("未完成", r.stderr)
@@ -563,7 +563,7 @@ class TestFilteringMatrix(CliCase):
             f.write(f"log_sources:\n  - name: s\n    path: {d}\n"
                     f'    pattern: "dk.log"\nblacklist: []\n')
         r = self.cli("--agent", "--config", cfg2, "--discover-keys",
-                     "--wait", "1", "--since", "24h")
+                     "--wait", "1", "--since", "8760h")
         self.assertEqual(r.returncode, 0)
         d = json.loads(r.stdout.strip())
         self.assertEqual(d["kind"], "logtail.discover_keys")
@@ -649,7 +649,7 @@ class TestFilteringMatrix(CliCase):
     def test_source_cli_append(self):
         r = self.cli("--agent", "--config", self.cfg, "-s",
                      f"extra:{self.dir}:scene*.log", "--wait", "1",
-                     "--lines", "50", "--since", "24h")
+                     "--lines", "50", "--since", "8760h")
         self.assertIn("extra", r.stdout)
 
     def test_date_placeholder(self):
@@ -673,12 +673,13 @@ class TestFilteringMatrix(CliCase):
     def test_since_cap_warns_on_large_file(self):
         """坑2回归(兜底路径): 二分失败(无时间戳行)时退化为尾部 8MB 扫描, 必须明示."""
         big = os.path.join(self.dir, "big.log")
+        tail_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 60))
         with open(big, "w") as f:
             # ~9MB 无时间戳垃圾行 -> 二分探针必然失败 -> 走 8MB 尾扫兜底
             old = "no timestamp garbage padding line aaaaaaaaaa\n"
             f.write(old * (9 * 1024 * 1024 // len(old.encode()) + 1))
-            f.write("[2026-08-27 23:59:59] recent tail one\n")
-            f.write("[2026-08-27 23:59:59] recent tail two\n")
+            f.write(f"[{tail_ts}] recent tail one\n")           # 动态时间: 免日期依赖
+            f.write(f"[{tail_ts}] recent tail two\n")
         cfg2 = os.path.join(self.dir, "big.yaml")
         with open(cfg2, "w") as f:
             f.write(f"log_sources:\n  - name: big\n    path: {self.dir}\n"

@@ -88,6 +88,7 @@ def _parse_source(raw: Dict, date: str) -> SourceConfig:
     path = expand_date(str(raw.get("path", "")), date)
     pattern = expand_date(str(raw.get("pattern", "*.log")), date)
     dx = str(raw.get("dx", ""))
+    filter_ = str(raw.get("filter", ""))
     enabled = bool(raw.get("enabled", True))
 
     # dx 命令若含 {date} 也一并替换 (如 dx log SceneServer {date})
@@ -95,7 +96,7 @@ def _parse_source(raw: Dict, date: str) -> SourceConfig:
         dx = expand_date(dx, date)
         # dx 模式无需 path/pattern; 但仍保留以备 glob 兜底
     return SourceConfig(name=name, path=path, pattern=pattern, dx=dx,
-                        enabled=enabled)
+                        filter=filter_, enabled=enabled)
 
 
 def load_config(path: Optional[str], date: str = "") -> Config:

@@ -16,12 +16,19 @@
 #   - 支持功能/筛选/输出详见 `--help`(如 --focus/--correlate/--ctx-same/--json/--summary/--since)。
 
 # 别名(name) -> 服务 对照:
-#   scene=SceneServer(多实例 dungeon-0/main-0) / scenemgr=SceneMgrServer / guild=GuildServer
+#   scene-main=SceneServer野外 / scene-dungeon=SceneServer副本 / scenemgr=SceneMgrServer / guild=GuildServer
 #   auction=AuctionServer / public=PublicServer / http=HttpServer / match=MatchServer
 #   activity=ActivityServer / relation=RelationServer / team=TeamService(ms) / bar=BarService(ms)
 log_sources:
-  - name: scene
+  # SceneServer 按实例类型分开(排查很重要): Main=野外地图, Dungeon=副本。
+  # filter 按路径子串筛 dx 返回的文件 —— 生产有多个实例(main-0/main-1/dungeon-0/...),
+  # 子串匹配自动聚齐同类全部实例; 本开发服各只有一个。
+  - name: scene-main            # 野外地图实例
     dx: "dx log SceneServer 131189"
+    filter: main
+  - name: scene-dungeon         # 副本实例
+    dx: "dx log SceneServer 131189"
+    filter: dungeon
 
   - name: scenemgr
     dx: "dx log SceneMgrServer 131189"

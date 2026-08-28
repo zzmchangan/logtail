@@ -278,6 +278,37 @@ class TestSpeed(FollowerCase):
             f.stop()
 
 
+class TestSourceFilter(FollowerCase):
+    def test_glob_filter(self):
+        """源级 filter: 按路径子串过滤发现的文件 (区分 SceneServer main/dungeon)."""
+        write(os.path.join(self.dir, "vm01-main-0.log"), "main line\n")
+        write(os.path.join(self.dir, "vm01-dungeon-0.log"), "dungeon line\n")
+        f = LogFollower([SourceConfig("s", self.dir, "*.log", filter="main")],
+                        history=10)
+        f.start()
+        try:
+            got = collect(f, want=1, timeout=2)
+            self.assertEqual([l.text for l in got], ["main line"])   # 只读 main
+        finally:
+            f.stop()
+
+    def test_dx_filter(self):
+        d = tmpdir()
+        main_log = os.path.join(d, "vm01-main-0.log")
+        dun_log = os.path.join(d, "vm01-dungeon-0.log")
+        write(main_log, "main line\n")
+        write(dun_log, "dungeon line\n")
+        dx = f"bash -c 'printf \"%s\\n%s\\n\" {main_log} {dun_log}'"
+        f = LogFollower([SourceConfig("s", "", "", dx=dx, filter="dungeon")],
+                        history=10)
+        f.start()
+        try:
+            got = collect(f, want=1, timeout=2)
+            self.assertEqual([l.text for l in got], ["dungeon line"])
+        finally:
+            f.stop()
+
+
 class TestDxPaths(unittest.TestCase):
     def worker(self, dx):
         f = LogFollower([SourceConfig("s", "", "", dx=dx)])

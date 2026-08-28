@@ -19,6 +19,7 @@ class SourceConfig:
     path: str        # 目录路径 (可含 {date} 占位符)
     pattern: str     # glob 匹配模式,如 "*.log" (可含 {date} 占位符)
     dx: str = ""     # 可选: 用 `dx <cmd>` 求真实文件路径, 优先于 glob
+    filter: str = "" # 可选: 按路径子串过滤发现的文件(大小写不敏感), 如 main/dungeon 区分实例
     enabled: bool = True   # False: 默认不采集, --enable-source <名> 按名启用
 
 

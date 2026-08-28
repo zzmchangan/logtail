@@ -48,6 +48,9 @@ keywords:                     # 初始高亮词 (大小写不敏感; re: 前缀=
   启动时自动用当天日期填充。看历史某天用 `--date 2026-08-26`。
 - **`dx` 自动发现**: 配了 `dx` 后不再 glob, 而是运行 `dx <cmd>` 拿返回的具体文件路径
   (每行一个), 配合按日期/服务拆分的日志最省事, 无需每次手工改。
+- **`filter` 实例过滤**: 按路径子串(大小写不敏感)过滤发现的文件——同一服务多实例
+  拆成多个源分别追踪。如 SceneServer 拆 `scene-main`(野外, filter: main)与
+  `scene-dungeon`(副本, filter: dungeon), 来源列与 `--focus` 都能区分。
 
 ## AI Agent 模式 (非交互)
 给 AI 修 bug 用——核心价值是**聚合日志 + 过滤日志**:把分散在不同进程/目录的文件聚合成一条时间有序的流,再过滤到少量行,AI 就能在**一个聚焦视图**里快速定位 bug。
@@ -84,7 +87,7 @@ python -m logtail --agent --config config.yaml --match ERROR --json --lines 20
 python -m logtail --diagnose --config config.yaml
 
 # 单源聚焦: 只看 scene 这个进程的行 (按配置里的源名筛, dx/glob 源均有效)
-python -m logtail --agent --config config.yaml --focus scene --since 5m
+python -m logtail --agent --config config.yaml --focus scene-main,scene-dungeon --since 5m
 
 # 关联键: 跨进程跟一条逻辑链路 (同一 id 不同写法也能串起来)
 python -m logtail --agent --config config.yaml --correlate player=123 --since 5m
