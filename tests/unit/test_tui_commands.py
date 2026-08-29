@@ -9,7 +9,7 @@ import unittest
 from logtail.config import Config
 from logtail.models import LogLine, SourceConfig
 from logtail.timeline import Timeline
-from logtail.tui import Tui, _goto, _source_cmd
+from logtail.tui import Tui, _goto, _source_cmd, _wrap_body
 
 
 class _FakeScreen:
@@ -88,6 +88,26 @@ class TestGoto(unittest.TestCase):
         tui.timeline.clear()
         r = _goto(tui, ["/goto", "11:23:45"])
         self.assertIn("缓冲为空", r)
+
+
+class TestFullWidthWrap(unittest.TestCase):
+    def test_continuation_fills_full_width(self):
+        """续行按 rest_w 折(顶格用满整行), 不再因扣前缀宽而半空."""
+        segs = _wrap_body("x" * 100, 20, 79)
+        self.assertEqual(len(segs[0]), 20)                       # 首段 = first_w
+        self.assertTrue(all(len(s) <= 79 for s in segs))         # 续段 <= rest_w
+        self.assertEqual(len(segs), 3)                           # 20 + 79 + 1
+
+    def test_long_line_fewer_full_rows(self):
+        """长行: 首行让位前缀, 续行用满整行, 行数更少且铺满."""
+        tui = make()
+        ln = LogLine("scene", "x" * 200, (1787796001.0, 0), 1,
+                     "[2026-08-27 10:00:01.000000]", "INFO")
+        segs = tui._segments(ln, 80)
+        sx = tui._str_width(tui._prefix_of(ln))
+        self.assertLessEqual(len(segs[0]), 80 - 1 - sx)          # 首行 <= 前缀后剩余
+        self.assertTrue(all(len(s) <= 79 for s in segs[1:]))
+        self.assertGreaterEqual(len(segs), 2)                    # 200 字在 80 列必折行
 
 
 if __name__ == "__main__":

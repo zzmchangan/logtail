@@ -306,11 +306,11 @@ class Tui:
                 if self._source_kept(ln)]
 
     def _segments(self, line: LogLine, w: int) -> List[str]:
-        """某条日志行在宽度 w 下折成的显示段 (续行无前缀)."""
+        """某条日志行在宽度 w 下折成的显示段 (首段带前缀, 续段顶格用满整行)."""
         prefix = self._prefix_of(line)
         start_x = self._str_width(prefix)
-        body_w = max(1, w - 1 - start_x)
-        return wrap_text(line.text, body_w) or [""]
+        first_w = max(1, w - 1 - start_x)
+        return _wrap_body(line.text, first_w, max(1, w - 1))
 
     def _row_count(self, line: LogLine, w: int) -> int:
         """该行折行后的显示行数."""
@@ -1246,3 +1246,18 @@ def wrap_text(text: str, width: int) -> List[str]:
         cur_w += cw
     out.append("".join(cur))
     return out
+
+
+def _wrap_body(text: str, first_w: int, rest_w: int) -> List[str]:
+    """按"首段 + 续段各用不同列宽"折行: 首段 first_w 列(第一行让位给前缀),
+    续段 rest_w 列(顶格, 用满整行), 与 less 的整行按终端宽折行一致 ——
+    续行不再因"把前缀宽度也扣掉"而半空, 长行占的显示行数也更少。
+    """
+    head = wrap_text(text, max(1, first_w))
+    if not head:
+        return [""]
+    first = head[0]
+    rest = text[len(first):]
+    if not rest:
+        return [first]
+    return [first] + (wrap_text(rest, max(1, rest_w)) or [""])
