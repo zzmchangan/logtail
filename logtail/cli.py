@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
             "作用域提示:\n"
             "  --lines/--wait/--count 仅 agent 生效; --mode monitor 忽略 -C/--since/--count。\n"
             "  --since(dump) 以窗口内最新日志时间戳为参考; '-C 5s' 时间窗仅交互版可用 (agent 的 -C 只接受行数)。\n"
+            "  TUI 交互: 回溯深度默认 20000 行; 冻结锚内容行不漂移, 渲染只折可见窗防洪峰卡死。\n"
             "  --wait(dump) 是backlog完成后实时跟随的时长(默认0, 活水下idle不触发; 跟随给--wait 5);\n"
             "  --since 裸数字=秒(90=90s); --hard-cap 可调大宽窗读取上限(默认30s)。\n"
             "  由信号驱动等完(30s硬上限), 超时 stderr 警告'读取未完成'——空结果勿当结论。\n"

@@ -92,7 +92,7 @@ class TestOutputContract(CliCase):
                        "硬上限", "读取未完成", "字面量", "head",
                        "case-sensitive", "anchor", "discover-keys",
                        "--at", "--keep", "--blacklist-del", "--no-blacklist",
-                       "--enable-source", "max-line-len"):
+                       "--enable-source", "max-line-len", "回溯深度"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):

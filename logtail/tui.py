@@ -21,12 +21,17 @@ from typing import List, Optional, Sequence, Tuple
 from . import __version__
 from .agent import format_line
 from .config import Config, ConfigError, load_config, save_config
-from .models import PALETTE_FG_COLORS, ColorPool, fmt_hhmmss
+from .models import LogLine, PALETTE_FG_COLORS, ColorPool, fmt_hhmmss
 from .reader import LogFollower
 from .rules import RulePatternError, RuleSet
 from .timeline import MODE_ALL, MODE_CONTEXT, MODE_TRACE, Timeline
 
 TICK_MS = 120                      # 主循环刷新间隔 (ms), 对应"延迟 < 200ms"
+
+# 每帧最多排空并处理的日志行数。洪峰时一次性几万行会卡死主循环 (feed 高亮 +
+# 排序全是主线程单帧做), 限流后每帧只消化这么多行, 界面保持可响应, 其余留在队列
+# 下帧继续。代价是超大洪峰下"底部追新"会略滞后, 但可交互优先。
+DRAIN_BATCH = 20000
 
 DEFAULT_CONTEXT_N = 5
 
@@ -60,9 +65,11 @@ class Tui:
         self.paused = False
         self._pending: List = []                 # pause 期间积压的行
         self.screen = None
-        # 滚动用"绝对锚点"而非相对底部偏移: 一旦用户向上滚, 锁住视口顶端
-        # 行号; 新日志追加不再把窗口拽回底部。None 表示跟随底部 (最新)。
-        self.view_top: Optional[int] = None
+        # 滚动用"内容锚点"而非绝对行号: 一旦用户向上滚, 把**某条日志行**钉在视口
+        # 顶端; 新日志追加或环形缓冲从头部淘汰旧行时, 按对象身份重新定位该行,
+        # 冻住的内容不漂移。None 表示跟随底部 (最新)。
+        self.view_anchor: Optional[LogLine] = None   # 冻结时钉在顶部的日志行
+        self.view_offset: int = 0                     # 该行折行后从第几段开始显示
         self.need_refresh = False                # 是否有新行, 重置自动回底
 
         # 搜索状态: 回车裁决 (命令->执行, 非命令->搜索); n/N 上下跳
@@ -187,7 +194,7 @@ class Tui:
     # 数据
     # ------------------------------------------------------------------
     def _drain(self) -> None:
-        batch = self.follower.queue.drain()
+        batch = self.follower.queue.take_upto(DRAIN_BATCH)
         if not batch:
             return
         if self.paused:
@@ -223,35 +230,23 @@ class Tui:
         log_h = max(0, h - input_h - status_h)
 
         visible = self.timeline.visible()
-        # 把所有可见行按显示列宽折行, 得到一维的"屏幕显示行"序列
-        rows = self._layout(visible, w)
-        total = len(rows)
-        self._row_total = total
+        # 只折可见窗口 (window-bounded): 环形缓冲最大 20000 行, 若每帧全折一遍
+        # wrap_text 要 300ms+, 主循环直接卡死。这里只折视口需要的那几行。
+        rows = self._window(visible, log_h, w)
+        # 冻结时视口没被填满 = 锚点行已贴近缓冲末尾 -> 自动解除冻结 (回到跟随底部)
+        if self.view_anchor is not None and len(rows) < log_h:
+            self.view_anchor, self.view_offset = None, 0
+            rows = self._window(visible, log_h, w)
+        total = len(visible)
         self.need_refresh = False
 
-        # 视口锚点: 未冷冻(跟随底部)时窗口始终贴底; 冷冻后锁定绝对行号,
-        # 新日志追加不移动视口 (否则向上滚会被新日志拽回底部)。
-        # 若内容变少(如 /clear、切上下文)导致锚点越界, 相机范围回落。
-        max_top = max(0, total - log_h)
-        if self.view_top is not None:
-            self.view_top = min(self.view_top, max_top)
-            # 冷冻的行已全部被挤出(如 上下文窗口重置), 回到跟随底部
-            if self.view_top >= total - log_h:
-                self.view_top = None
-        if self.view_top is None:
-            window_end = total
-        else:
-            window_end = min(total, self.view_top + log_h)
-        window_start = max(0, window_end - log_h)
-        window_end = max(window_start, window_end)      # 防止空窗
-
-        for row, (prefix, seg, hl_rules, dim, level, is_hit) in enumerate(rows[window_start:window_end]):
+        for row, (prefix, seg, hl_rules, dim, level, is_hit, _line) in enumerate(rows):
             if row >= log_h:
                 break
             self._render_display_row(stdscr, row, prefix, seg, hl_rules, dim, w, level, is_hit)
 
         pause_marker = " PAUSED" if self.paused else ""
-        freeze_marker = " FREEZE" if self.view_top is not None else ""
+        freeze_marker = " FREEZE" if self.view_anchor is not None else ""
         mode = "context|{n}".format(n=self.timeline.context_n) if self.timeline.mode == MODE_CONTEXT else "all"
         n_kw = len(self.ruleset.list_highlights())
         search_marker = f"  /{self.search_pat}{self.search_idx if self.search_idx>=0 else '×'} n/N↑↓" if self.search_active else ""
@@ -267,28 +262,193 @@ class Tui:
             pass
         stdscr.refresh()
 
-    def _layout(self, visible, w):
-        """把可见日志行按宽度折成屏幕显示行.
+    # ------------------------------------------------------------------
+    # 视口: 内容锚定的窗口折行 (window-bounded)
+    # ------------------------------------------------------------------
+    def _term_w(self) -> int:
+        """终端宽度 (列); 无真实屏幕时回退 80."""
+        if self.screen:
+            try:
+                _, w = self.screen.getmaxyx()
+                return max(1, w)
+            except curses.error:
+                pass
+        return 80
 
-        返回 [(prefix_or_None, seg, hl_rules, dim, level), ...]; 每条超长日志会占多行,
-        只有首行带前缀 (时间戳+来源), 续行顶格显示, 便于完整看清长行内容。
+    def _segments(self, line: LogLine, w: int) -> List[str]:
+        """某条日志行在宽度 w 下折成的显示段 (续行无前缀)."""
+        prefix = self._prefix_of(line)
+        start_x = self._str_width(prefix)
+        body_w = max(1, w - 1 - start_x)
+        return wrap_text(line.text, body_w) or [""]
+
+    def _row_count(self, line: LogLine, w: int) -> int:
+        """该行折行后的显示行数."""
+        return len(self._segments(line, w))
+
+    def _visible_idx_of(self, visible, line: LogLine) -> Optional[int]:
+        """按对象身份找 line 在可见列表中的索引; 找不到 (已淘汰) 返回 None."""
+        for i, (ln, _hl, _dim) in enumerate(visible):
+            if ln is line:
+                return i
+        return None
+
+    def _append_rows(self, rows: List, line: LogLine, hl_rules, dim,
+                     w: int, offset: int, hit_line, search_rule) -> None:
+        """把一条日志行的折行段追加进 rows (要么全折, 由外层控制行数)."""
+        segs = self._segments(line, w)
+        offset = min(offset, max(0, len(segs) - 1))       # 折行宽度变化后夹回范围
+        prefix = self._prefix_of(line)
+        is_hit = hit_line is not None and line is hit_line
+        row_hl = hl_rules
+        if is_hit and search_rule is not None:
+            row_hl = [search_rule] + list(hl_rules)
+        sub = segs[offset:] if offset else segs
+        for j, seg in enumerate(sub):
+            pfx = prefix if (offset == 0 and j == 0) else None
+            rows.append((pfx, seg, row_hl, dim, line.level, is_hit, line))
+
+    def _window(self, visible, log_h: int, w: int) -> List:
+        """返回视口要画的显示行 (window-bounded, 不折整条环形缓冲).
+
+        每项 7 元组 (prefix_or_None, seg, hl_rules, dim, level, is_hit, line)。
+        冻结(view_anchor 非 None)时锚点行钉在视口顶部 (随内容定位, 不随行号漂移);
+        否则窗口贴缓冲尾部 (实时跟随)。
         """
-        out: List[Tuple[Optional[str], str, list, bool, str, bool]] = []
-        hit_line = self._hit_line
-        for line, hl_rules, dim in visible:
-            prefix = self._prefix_of(line)
-            start_x = self._str_width(prefix)
-            body_w = max(1, w - 1 - start_x)
-            segs = wrap_text(line.text, body_w) or [""]
-            is_hit = hit_line is not None and line is hit_line
-            # 命中行额外注入搜索规则, 让命中的关键词本身也被标亮
-            row_hl = hl_rules
-            if is_hit and self.search_rule is not None:
-                row_hl = [self.search_rule] + list(hl_rules)
-            for i, seg in enumerate(segs):
-                out.append((prefix if i == 0 else None, seg, row_hl, dim,
-                            line.level, is_hit))
-        return out
+        if log_h <= 0 or not visible:
+            return []
+        n = len(visible)
+        hit_line, search_rule = self._hit_line, self.search_rule
+
+        if self.view_anchor is None:
+            # 跟随底部: 从后往前数行, 找起点使该处往后折出的行数 >= log_h
+            acc, start = 0, n - 1
+            while start > 0 and acc < log_h:
+                acc += self._row_count(visible[start][0], w)
+                start -= 1
+            rows: List = []
+            for i in range(start, n):
+                line, hl_rules, dim = visible[i]
+                self._append_rows(rows, line, hl_rules, dim, w, 0,
+                                  hit_line, search_rule)
+            return rows[-log_h:] if len(rows) > log_h else rows
+
+        # 冻结: 锚点行钉在视口顶部
+        ai = self._visible_idx_of(visible, self.view_anchor)
+        if ai is None:
+            # 锚点被淘汰 / 上下文窗口变化 -> 回到跟随底部
+            self.view_anchor, self.view_offset = None, 0
+            return self._window(visible, log_h, w)
+        rows = []
+        for i in range(ai, n):
+            line, hl_rules, dim = visible[i]
+            off = self.view_offset if i == ai else 0
+            self._append_rows(rows, line, hl_rules, dim, w, off,
+                              hit_line, search_rule)
+            if len(rows) >= log_h:
+                break
+        return rows[:log_h]
+
+    # ------------------------------------------------------------------
+    # 滚动: 按"显示行"局部移动内容锚点 (不扫描全环, 只走 delta 附近的行)
+    # ------------------------------------------------------------------
+    def _top_of_window_bottom(self, visible, log_h: int, w: int) -> Tuple[LogLine, int]:
+        """跟随底部时视口顶端所在的行 (只从末尾往回数 log_h 行, 不扫全环).
+
+        返回 (line, offset): line 占据视口顶端的显示行, offset 为该行内第几段。
+        """
+        n = len(visible)
+        if n == 0:
+            return None, 0
+        acc, i = 0, n - 1
+        while i >= 0:
+            rc = self._row_count(visible[i][0], w)
+            if acc + rc >= log_h:
+                return visible[i][0], acc + rc - log_h
+            acc += rc
+            i -= 1
+        return visible[0][0], 0
+
+    def _at_bottom(self, visible, i: int, off: int, w: int, log_h: int) -> bool:
+        """从第 i 行第 off 段到可见列表末尾, 剩余显示行数是否 <= log_h (视口已贴底)."""
+        n = len(visible)
+        cnt = self._row_count(visible[i][0], w) - off
+        j = i + 1
+        while cnt <= log_h and j < n:
+            cnt += self._row_count(visible[j][0], w)
+            j += 1
+        return cnt <= log_h
+
+    def _walk_anchor(self, visible, w: int, delta: int) -> None:
+        """把内容锚点在可见列表里移动 delta 个显示行 (局部遍历).
+
+        delta > 0 = 向下 (往新), < 0 = 向上 (往回)。向下滚到底(剩余不足一屏)则解除冻结。
+        """
+        n = len(visible)
+        i = self._visible_idx_of(visible, self.view_anchor)
+        if i is None:
+            self.view_anchor, self.view_offset = None, 0
+            return
+        off = self.view_offset
+        log_h = max(1, self._log_h())
+        if delta > 0:
+            remaining = delta
+            while remaining > 0:
+                rc = self._row_count(visible[i][0], w)
+                avail = rc - off
+                if remaining < avail:
+                    off += remaining
+                    remaining = 0
+                else:
+                    remaining -= avail
+                    i += 1
+                    if i >= n:
+                        self.view_anchor, self.view_offset = None, 0
+                        return
+                    off = 0
+            if self._at_bottom(visible, i, off, w, log_h):
+                self.view_anchor, self.view_offset = None, 0   # 滚到底 -> 恢复跟随
+                return
+        elif delta < 0:
+            remaining = -delta
+            while remaining > 0:
+                if remaining <= off:
+                    off -= remaining
+                    remaining = 0
+                else:
+                    remaining -= off + 1
+                    i -= 1
+                    if i < 0:
+                        i, off = 0, 0
+                        remaining = 0
+                    else:
+                        off = self._row_count(visible[i][0], w) - 1
+        self.view_anchor = visible[i][0]
+        self.view_offset = max(0, off)
+
+    def _scroll_by(self, visible, w: int, delta: int) -> None:
+        """从当前视口位置移动 delta 个显示行; 到最底则解除冻结 (回到跟随底部).
+
+        delta > 0 = 向下 (往新), < 0 = 向上 (往回)。
+        跟随底部时向下无变化; 向上先冻结在"当前底窗口的顶端"再移动。
+        """
+        if not visible:
+            self.view_anchor, self.view_offset = None, 0
+            return
+        if self.view_anchor is None:
+            if delta >= 0:
+                return                          # 已在底部, 向下滚保持跟随
+            log_h = max(1, self._log_h())
+            line, off = self._top_of_window_bottom(visible, log_h, w)
+            if line is None:
+                return
+            self.view_anchor, self.view_offset = line, off
+        self._walk_anchor(visible, w, delta)
+
+    def _anchor_top(self, visible) -> None:
+        """跳到最顶: 锚定第一行."""
+        if visible:
+            self.view_anchor, self.view_offset = visible[0][0], 0
 
     @staticmethod
     def _str_width(text: str) -> int:
@@ -435,44 +595,40 @@ class Tui:
             return None, self._cmd_history(+1), ""
 
         # 输入框为空时 ↑/↓ 走滚动
-        total = getattr(self, "_row_total", 0)
+        visible = self.timeline.visible()
+        w = self._term_w()
         log_h = max(1, self._log_h())
-        max_top = max(0, total - log_h)
-        cur_top = self.view_top if self.view_top is not None else max_top
 
-        if key == curses.KEY_UP:            # 向上回溯一行
-            self.view_top = max(0, cur_top - 1)
+        if key == curses.KEY_UP:            # 向上回溯一行 (进入冻结/上移锚点)
+            self._scroll_by(visible, w, -1)
             return None, buf, ""
         if key == curses.KEY_DOWN:          # 向下; 到底则恢复自动跟随
-            nxt = min(cur_top + 1, max_top)
-            self.view_top = None if nxt >= max_top else nxt
+            self._scroll_by(visible, w, +1)
             return None, buf, ""
         if key == curses.KEY_PPAGE:         # 上翻一页
-            self.view_top = max(0, cur_top - log_h)
+            self._scroll_by(visible, w, -log_h)
             return None, buf, ""
         if key == curses.KEY_NPAGE:         # 下翻一页
-            nxt = min(cur_top + log_h, max_top)
-            self.view_top = None if nxt >= max_top else nxt
+            self._scroll_by(visible, w, +log_h)
             return None, buf, ""
         if key == 6:                        # Ctrl-F: 下翻一页 (vim 习惯, 同 PgDn)
-            nxt = min(cur_top + log_h, max_top)
-            self.view_top = None if nxt >= max_top else nxt
+            self._scroll_by(visible, w, +log_h)
             return None, buf, ""
         if key == 2:                        # Ctrl-B: 上翻一页 (vim 习惯, 同 PgUp)
-            self.view_top = max(0, cur_top - log_h)
+            self._scroll_by(visible, w, -log_h)
             return None, buf, ""
         if key == curses.KEY_HOME:          # 跳到最顶
-            self.view_top = 0
+            self._anchor_top(visible)
             return None, buf, ""
         if key == curses.KEY_END:           # 跳到最底, 恢复自动跟随
-            self.view_top = None
+            self.view_anchor, self.view_offset = None, 0
             return None, buf, ""
         # g / G: 仅当输入框为空时才当作"跳顶/跳底"快捷键 (不打断命令输入)
         if not buf and key == ord('g'):
-            self.view_top = 0
+            self._anchor_top(visible)
             return None, buf, ""
         if not buf and key == ord('G'):
-            self.view_top = None            # 跳最新, 恢复跟随
+            self.view_anchor, self.view_offset = None, 0   # 跳最新, 恢复跟随
             return None, buf, ""
         # 搜索已提交后 n/N 上下跳 (输入框为空时)
         if not buf and self.search_active and self.search_rule is not None:
@@ -521,17 +677,15 @@ class Tui:
                     fh.write(f"bstate=0x{bstate:x} dec={bstate}\n")
             except OSError:
                 pass
-        total = getattr(self, "_row_total", 0)
+        visible = self.timeline.visible()
+        w = self._term_w()
         log_h = max(1, self._log_h())
-        max_top = max(0, total - log_h)
-        cur_top = self.view_top if self.view_top is not None else max_top
         step = max(3, log_h // 3)           # 每次滚 3 行 (或 1/3 屏)
 
         if bstate & curses.BUTTON4_PRESSED:        # 上滚: 回看更早
-            self.view_top = max(0, cur_top - step)
+            self._scroll_by(visible, w, -step)
         elif bstate & (_BUTTON5 | curses.BUTTON4_RELEASED | curses.BUTTON4_CLICKED):
-            nxt = min(cur_top + step, max_top)     # 下滚: 前进
-            self.view_top = None if nxt >= max_top else nxt
+            self._scroll_by(visible, w, +step)     # 下滚: 前进
         return None, buf, ""
 
     def _log_h(self) -> int:
@@ -563,8 +717,12 @@ class Tui:
         if idx >= 0:
             self.search_idx = idx
             self.search_rule = rule
-            self._hit_line = self.timeline.ring._items[idx][0]   # 供渲染标记命中行
-            self.view_top = max(0, idx - ((self._log_h() or 20) // 2))
+            hit = self.timeline.ring._items[idx][0]      # 供渲染标记命中行
+            self._hit_line = hit
+            # 定位命中行: 先锚定它, 再向上走半屏, 使它大致出现在视口中部 (局部遍历)
+            self.view_anchor, self.view_offset = hit, 0
+            self._scroll_by(self.timeline.visible(), self._term_w(),
+                            -((self._log_h() or 20) // 2))
         else:
             self.search_idx = -1
             self._hit_line = None
@@ -573,7 +731,7 @@ class Tui:
         buf = buf.strip()
         if buf:
             self._record_history(buf)
-            self.view_top = None            # 提交后回底跟随
+            self.view_anchor, self.view_offset = None, 0   # 提交后回底跟随
             return "", self._dispatch(buf, msg)
         return "", msg
 
@@ -873,7 +1031,7 @@ def _reset(tui: Tui) -> str:
     tui.timeline.set_context_n(tui.cfg.context_n or DEFAULT_CONTEXT_N)
     tui.paused = False
     tui._pending.clear()
-    tui.view_top = None
+    tui.view_anchor, tui.view_offset = None, 0
     tui.search_active = False
     tui.search_idx = -1
     tui._hit_line = None

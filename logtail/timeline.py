@@ -24,6 +24,12 @@ MODE_ALL = "all"
 MODE_CONTEXT = "context"
 MODE_TRACE = "trace"
 
+# 交互版滚动回溯深度 (环形缓冲上限)。日志量大时若只留 4000 行, 冻结后往上翻
+# 几秒就到底, 且高并发灌日志时一个刷屏就让旧行被环淘汰、冻住的内容漂走。
+# 20000 在作者实测洪峰下足够回溯一段完整战斗; 代价是每次渲染因此改为
+# "只折可见窗口" (见 tui._window), 不再每帧折全环, 否则会卡死。
+DEFAULT_SCROLLBACK = 20000
+
 
 class RingBuffer:
     """定长环形缓冲, 直接维护 (LogLine, hl_rules) 列表, 自动淘汰最旧."""
@@ -53,7 +59,7 @@ class RingBuffer:
 class Timeline:
     """维护环形缓冲, 负责排序、上下文窗口计算与回溯可见集."""
 
-    def __init__(self, ruleset, maxlen: int = 4000) -> None:
+    def __init__(self, ruleset, maxlen: int = DEFAULT_SCROLLBACK) -> None:
         self.ruleset = ruleset
         self.ring = RingBuffer(maxlen)
         self.mode = MODE_ALL

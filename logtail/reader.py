@@ -488,6 +488,12 @@ class _UnboundedQueue:
             items, self._items = self._items, []
             return items
 
+    def take_upto(self, max_n: int) -> List[LogLine]:
+        """取出最多 max_n 项, 其余留在队列 (供交互版每帧限流, 防单帧排空卡死)."""
+        with self._cond:
+            items, self._items = self._items[:max_n], self._items[max_n:]
+            return items
+
     def clear(self) -> None:
         with self._cond:
             self._items = []
