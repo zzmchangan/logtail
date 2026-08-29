@@ -175,13 +175,22 @@ def _provenance(probe: List[dict], summary: bool, out_count: int,
         print(json.dumps(rec, ensure_ascii=False), file=sys.stderr)
 
 
+def _end(fail_if_empty: bool, n_out: int) -> int:
+    """dump 的退出码: --fail-if-empty 时 0 命中返回 1 (供脚本/CI 判断'没有报错').
+
+    默认 (不传此参数) 保持退出码 0 = 成功 (含 0 命中), 契约不变。
+    """
+    return 1 if (fail_if_empty and n_out == 0) else 0
+
+
 def dump(cfg: Config, match: Optional[str], lines_n: int,
          wait: float = 2.0, context: int = 0,
          since: Optional[float] = None, count_only: bool = False,
          exclude: Optional[str] = None, summary: bool = False,
          ctx_same: int = 0, as_json: bool = False,
          focus: Optional[str] = None, correlate: Optional[str] = None,
-         hard_cap: float = DUMP_HARD_CAP, keep: str = "tail") -> int:
+         hard_cap: float = DUMP_HARD_CAP, keep: str = "tail",
+         fail_if_empty: bool = False) -> int:
     """收集最近若干行(经黑名单/可选 match/时间窗), 打印后退出.
 
     收集分两阶段 (BUG0001: 大窗口下固定 --wait 会把"读不完"伪装成"没有"):
@@ -227,7 +236,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     if needs_ctx:
         hist += needs_ctx * 2 + 2
     follower = LogFollower(cfg.sources, history=hist, since=cfg.since,
-                           anchor=cfg.anchor)
+                           anchor=cfg.anchor, encoding=cfg.encoding)
     follower.start()
 
     seen: List = []
@@ -325,7 +334,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
             correlate_info["matched"] = n_hit
         _provenance(probe, summary, n_hit, latest_ts, correlate_info,
                     backlog_complete=backlog_done, anchor=cfg.anchor or None)
-        return 0
+        return _end(fail_if_empty, n_hit)
 
     if not matchers and not has_correlate and not excludes:
         out = seen[:lines_n] if keep == "head" else seen[-lines_n:]
@@ -337,7 +346,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
             print(_emit(ln, as_json, cfg.max_line_len))
         _provenance(probe, summary, len(out), latest_ts,
                     backlog_complete=backlog_done, anchor=cfg.anchor or None)
-        return 0
+        return _end(fail_if_empty, len(out))
 
     hit_idx = [i for i, ln in enumerate(seen) if _hit(ln)]
     out_idx: List[int] = []
@@ -382,7 +391,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
         correlate_info["matched"] = len(out_idx)
     _provenance(probe, summary, len(out_idx), latest_ts, correlate_info,
                 backlog_complete=backlog_done, anchor=cfg.anchor or None)
-    return 0
+    return _end(fail_if_empty, len(out_idx))
 
 
 def _split_terms(text: Optional[str]) -> List[str]:
@@ -431,7 +440,7 @@ def discover_keys(cfg: Config, lines_n: int, wait: float = 2.0,
     工具负责把它找出来摆好看。
     """
     follower = LogFollower(cfg.sources, history=max(lines_n, cfg.history or 0),
-                           since=cfg.since)
+                           since=cfg.since, encoding=cfg.encoding)
     follower.start()
     # 与 correlate 同一视野: 应用黑名单/级别过滤 —— 报告的数字就是
     # --correlate 实际能看到的, 避免"discover 说很好、correlate 全 0"的错位。
@@ -522,7 +531,7 @@ def monitor(cfg: Config, match: Optional[str], lines_n: int,
         return c_raw_val in ln.text        # 未定义 key -> 回退字面子串
 
     follower = LogFollower(cfg.sources, history=cfg.history or lines_n,
-                           since=cfg.since)
+                           since=cfg.since, encoding=cfg.encoding)
     follower.start()
     warned = False
     graces = 0

@@ -8,6 +8,7 @@ save() 幂等地把运行时高亮词与黑名单写回 YAML, 仅由 /save 命�
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -38,11 +39,13 @@ class Config:
     case_sensitive: bool = False               # True: 本次运行所有文本匹配区分大小写
     anchor: float = 0.0                        # >0: --since 窗口钉死在 [anchor-since, anchor]
     max_line_len: int = 0                       # >0: 输出时截断超长行(大 JSON/proto dump 省 token)
+    encoding: str = "utf-8"                    # 日志文件编码 (GBK/GB2312 等), 默认 utf-8
 
     def validate(self) -> None:
-        """校验源目录存在、pattern 合法, 给出明确错误."""
+        """校验源目录存在、pattern 合法, 给出明确错误; 另做温和诊断(警告不中断)."""
         if not self.sources:
             raise ConfigError("未配置任何日志源 (log_sources 为空)。")
+        seen_names: dict[str, int] = {}
         for src in self.sources:
             if not src.path and not src.dx:
                 raise ConfigError(f"源 {src.name!r} 缺少 path (与 dx 至少其一)。")
@@ -53,6 +56,12 @@ class Config:
                 )
             if not src.pattern and not src.dx:
                 raise ConfigError(f"源 {src.name!r} 缺少 pattern。")
+            seen_names[src.name] = seen_names.get(src.name, 0) + 1
+        dup = [n for n, c in seen_names.items() if c > 1]
+        if dup:
+            print(
+                f"logtail: warning: 多个日志源重名: {', '.join(sorted(dup))} —— "
+                f"输出前缀会撞, 建议改名区分", file=sys.stderr)
 
 
 def expand_date(text: str, date: str) -> str:
@@ -123,6 +132,10 @@ def load_config(path: Optional[str], date: str = "") -> Config:
     bls = data.get("blacklist", []) or []
     cfg.keywords = [str(k) for k in keys]
     cfg.blacklist = [str(b) for b in bls]
+
+    enc = data.get("encoding")
+    if enc:
+        cfg.encoding = str(enc)
 
     cks = data.get("correlation_keys", []) or []
     cfg.correlation_keys = [dict(k) for k in cks if isinstance(k, dict)]

@@ -92,7 +92,8 @@ class TestOutputContract(CliCase):
                        "硬上限", "读取未完成", "字面量", "head",
                        "case-sensitive", "anchor", "discover-keys",
                        "--at", "--keep", "--blacklist-del", "--no-blacklist",
-                       "--enable-source", "max-line-len", "回溯深度"):
+                       "--enable-source", "max-line-len", "回溯深度",
+                       "--fail-if-empty", "--encoding"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -104,6 +105,35 @@ class TestOutputContract(CliCase):
         r = self.A("--match", "zzz_nothing")
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), "")
+
+    def test_fail_if_empty_exit_1(self):
+        """/AI 脚本信号: --fail-if-empty 时 0 命中为非 0 退出, 默认仍为 0."""
+        r = self.A("--match", "zzz_nothing", "--fail-if-empty")
+        self.assertEqual(r.returncode, 1)
+        r0 = self.A("--match", "zzz_nothing")        # 不传则仍 exit 0
+        self.assertEqual(r0.returncode, 0)
+
+    def test_encoding_gbk_smoke(self):
+        """GBK 编码日志: --encoding gbk 应解出中文正文而非乱码."""
+        import tempfile
+        d = tempfile.mkdtemp(prefix="lt_gbk_")
+        with open(os.path.join(d, "g.log"), "wb") as f:
+            f.write("[2026-08-27 10:00:01.000000] scene     玩家进副本 错误\n".encode("gbk"))
+        r = self.cli("--agent", "--source", f"scene:{d}:g.log",
+                     "--history", "10", "--lines", "10", "--encoding", "gbk")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("玩家进副本", r.stdout)
+        self.assertNotIn("�", r.stdout)          # 无替换字符(未乱码)
+        # 不指定 encoding (默认 utf-8): 中文正文乱码, 但 ASCII 时间戳/来源列仍在
+        r2 = self.cli("--agent", "--source", f"scene:{d}:g.log",
+                      "--history", "10", "--lines", "10")
+        self.assertEqual(r2.returncode, 0)
+        self.assertIn("scene", r2.stdout)             # 来源列 ASCII 不受影响
+
+    def test_encoding_invalid_exit_2(self):
+        r = self.cli("--agent", "--config", self.cfg, "--encoding", "nope")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--encoding", r.stderr)
 
     def test_exit_2_bad_config(self):
         r = self.cli("--agent", "--config", "/nonexistent.yaml")

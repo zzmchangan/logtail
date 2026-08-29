@@ -46,7 +46,7 @@ class Tui:
         self.timeline = Timeline(self.ruleset)
         self.timeline.set_context_n(cfg.context_n or DEFAULT_CONTEXT_N)
         self.follower = LogFollower(cfg.sources, history=cfg.history,
-                                    since=cfg.since)
+                                    since=cfg.since, encoding=cfg.encoding)
         if cfg.level:
             try:
                 self.ruleset.set_level_filter(cfg.level)
@@ -250,7 +250,15 @@ class Tui:
         mode = "context|{n}".format(n=self.timeline.context_n) if self.timeline.mode == MODE_CONTEXT else "all"
         n_kw = len(self.ruleset.list_highlights())
         search_marker = f"  /{self.search_pat}{self.search_idx if self.search_idx>=0 else '×'} n/N↑↓" if self.search_active else ""
-        status = f" mode={mode} hl={n_kw} lines={total}{pause_marker}{freeze_marker}{search_marker}   {msg}"
+        # 冻结且已到缓冲最顶时, 提示还有 N 行更早日志已被环形缓冲丢弃 (A6)
+        discarded = self.timeline.fed_total - len(self.timeline.ring)
+        top_marker = ""
+        if (self.timeline.mode == MODE_ALL and self.view_anchor is not None
+                and self.timeline.ring._items
+                and self.view_anchor is self.timeline.ring._items[0][0]
+                and discarded > 0):
+            top_marker = f" ·已丢弃{discarded}行更早"
+        status = f" mode={mode} hl={n_kw} lines={total}{pause_marker}{freeze_marker}{top_marker}{search_marker}   {msg}"
         status = strip_nul(status)
         buf = strip_nul(buf)
         try:

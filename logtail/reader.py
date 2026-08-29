@@ -56,7 +56,7 @@ def _probe_line(fh, pos: int, size: int):
     return line_start, raw
 
 
-def _binary_since_offset(fh, size: int, cutoff: float):
+def _binary_since_offset(fh, size: int, cutoff: float, encoding: str = "utf-8"):
     """时间戳二分定位: 第一条 ts >= cutoff 行的字节偏移; 无法二分返回 None.
 
     前提: 日志按行顺序追加、时间戳单调不减 (单逻辑线程写日志的常见形态)。
@@ -73,7 +73,7 @@ def _binary_since_offset(fh, size: int, cutoff: float):
         if probe is None:
             return None
         line_start, raw = probe
-        hit = extract_timestamp(raw.decode("utf-8", errors="replace"))
+        hit = extract_timestamp(raw.decode(encoding, errors="replace"))
         if hit is None:
             return None
         if hit[0][0] >= cutoff:
@@ -85,13 +85,13 @@ def _binary_since_offset(fh, size: int, cutoff: float):
     if lo > 0:
         prev = _probe_line(fh, lo - 1, size)
         if prev is not None:
-            hit = extract_timestamp(prev[1].decode("utf-8", errors="replace"))
+            hit = extract_timestamp(prev[1].decode(encoding, errors="replace"))
             if hit is not None and hit[0][0] >= cutoff:
                 return None
     return lo
 
 
-def _last_timestamp(path: str) -> Optional[float]:
+def _last_timestamp(path: str, encoding: str = "utf-8") -> Optional[float]:
     """读文件末尾非空行的时间戳 (epoch 秒), 失败返回 None (供 --diagnose 用)."""
     try:
         with open(path, "rb") as fh:
@@ -103,7 +103,7 @@ def _last_timestamp(path: str) -> Optional[float]:
     except OSError:
         return None
     for raw in reversed([l for l in data.split(b"\n") if l]):
-        hit = extract_timestamp(raw.decode("utf-8", errors="replace"))
+        hit = extract_timestamp(raw.decode(encoding, errors="replace"))
         if hit:
             return hit[0][0]
     return None
@@ -320,7 +320,7 @@ class _SourceWorker(threading.Thread):
 
         try:
             with open(path, "rb") as fh:
-                off = _binary_since_offset(fh, size, cutoff)
+                off = _binary_since_offset(fh, size, cutoff, self._owner.encoding)
         except OSError:
             off = None
         if off is not None:
@@ -347,7 +347,7 @@ class _SourceWorker(threading.Thread):
             if not raw:
                 offset += 1
                 continue
-            line = raw.decode("utf-8", errors="replace")
+            line = raw.decode(self._owner.encoding, errors="replace")
             hit = extract_timestamp(line)
             if hit is not None and hit[0][0] >= cutoff:
                 return offset          # 第一条落在窗口内的行, 从这里开始回看
@@ -383,7 +383,7 @@ class _SourceWorker(threading.Thread):
             raw = raw.rstrip(b"\r")
             if not raw:
                 continue
-            line = raw.decode("utf-8", errors="replace")
+            line = raw.decode(self._owner.encoding, errors="replace")
             hit = extract_timestamp(line)
             if hit is not None:
                 ts_key, start, end = hit
@@ -400,11 +400,13 @@ class LogFollower:
     """管理全部后台读取线程, 暴露 reset() 供 /reset 使用."""
 
     def __init__(self, sources: List[SourceConfig], history: int = 0,
-                 since: float = 0.0, anchor: float = 0.0) -> None:
+                 since: float = 0.0, anchor: float = 0.0,
+                 encoding: str = "utf-8") -> None:
         self.sources = sources
         self.history = history               # >0 表示启动时回溯末 N 行
         self.since = since                   # >0 表示按时间戳回看最近 N 秒
         self.anchor = anchor                 # >0: since 窗口钉死 [anchor-since, anchor]
+        self.encoding = encoding             # 日志文件编码 (GBK 等), reader 解码用
         self.queue = _UnboundedQueue()
         self._seq = itertools.count(1)
         self._lock = threading.Lock()
@@ -457,7 +459,7 @@ class LogFollower:
             paths = w._current_paths()
             latest = None
             for p in paths:
-                t = _last_timestamp(p)
+                t = _last_timestamp(p, self.encoding)
                 if t is not None and (latest is None or t > latest):
                     latest = t
             out.append({

@@ -66,6 +66,8 @@ class Timeline:
         self.context_n = 5                       # 上下文窗: 行数 (默认)
         self.context_seconds = 0.0               # >0 时上下文窗按时间 (秒)
         self.trace_term = ""                # 实体 trace: 只显示含该词的行 (无邻居)
+        self.fed_total = 0                  # 累计已喂入的行数 (与 len(ring) 之差
+                                            # = 已被环形缓冲丢弃的更早行数)
 
     # ------------------------------------------------------------------
     # 数据流入
@@ -79,6 +81,7 @@ class Timeline:
         if not lines:
             return
         lines.sort(key=lambda l: (l.ts_key, l.seq))
+        self.fed_total += len(lines)
         for ln in lines:
             hl = self.ruleset.highlights(ln.text)
             self.ring.append(ln, hl)

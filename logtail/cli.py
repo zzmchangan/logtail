@@ -38,7 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "输出契约 (AI Agent / 脚本接入):\n"
             "  日志正文只写 stdout, 错误/提示写 stderr (可 2>/dev/null 只取正文)。\n"
-            "  每行 = '{时间戳} {来源:<12} {正文}'; 退出码: 0=成功(含 0 命中), 2=配置/参数/正则错误。\n"
+            "  每行 = '{时间戳} {来源:<12} {正文}'; 退出码: 0=成功(含 0 命中), 2=配置/参数/正则错误;\n"
+            "  仅加 --fail-if-empty 且命中 0 行时返回 1 (脚本 'if ! logtail ...' 断言'没有报错')。\n"
             "  agent 一次性收集后按 (时间戳, 序列号) 全局排序; 无时间戳行退化为到达时刻。\n"
             "  空结果/--count 0 时先看 stderr: 有 warning 或 --summary 的 JSON 里 files==0/发现失败\n"
             "  -> 是'源没被发现'而非'没错误' (避免 exit 0 + 空输出 = 假阴性); files>0 才可信。\n"
@@ -47,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  --lines/--wait/--count 仅 agent 生效; --mode monitor 忽略 -C/--since/--count。\n"
             "  --since(dump) 以窗口内最新日志时间戳为参考; '-C 5s' 时间窗仅交互版可用 (agent 的 -C 只接受行数)。\n"
             "  TUI 交互: 回溯深度默认 20000 行; 冻结锚内容行不漂移, 渲染只折可见窗防洪峰卡死。\n"
+            "  --encoding <codec> 日志文件编码(默认 utf-8): GBK/GB2312 日志不指定会乱码, 可配 config 'encoding:'。\n"
             "  --wait(dump) 是backlog完成后实时跟随的时长(默认0, 活水下idle不触发; 跟随给--wait 5);\n"
             "  --since 裸数字=秒(90=90s); --hard-cap 可调大宽窗读取上限(默认30s)。\n"
             "  由信号驱动等完(30s硬上限), 超时 stderr 警告'读取未完成'——空结果勿当结论。\n"
@@ -128,6 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-line-len", type=int, default=0,
                    help="输出时截断超长行(字符数, 0=不截断): 大 JSON/proto dump 一条几十KB "
                         "吃掉输出配额, 截断处会标记原始长度")
+    p.add_argument("--encoding", default=None,
+                   help="日志文件编码 (默认 utf-8): 国产系统日志常是 GBK/GB2312, 不指定会乱码"
+                        "且正文错位。可用 Python codec 名, 如 --encoding gbk 或 gb2312/utf-8")
     p.add_argument("--enable-source", default=None,
                    help="按名启用 config 里 enabled: false 的源(逗号/空格分隔), 如 "
                         "--enable-source login,clientgate —— 免手抄 --source 的目录+pattern; "
@@ -136,6 +141,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="采样窗口自报候选关联键的区分度/跨源分布(JSON), 找出最佳跨服关联键")
     p.add_argument("--count", "--cnt", action="store_true",
                    help="agent dump 模式只输出命中行数, 不打印正文 (快速判断是否爆发)")
+    p.add_argument("--fail-if-empty", action="store_true",
+                   help="agent dump 模式下若命中 0 行则以退出码 1 结束 (脚本/CI 用 "
+                        "'if ! logtail ...' 判断没有报错; 默认仍为退出码 0)")
     p.add_argument("--lines", "-n", type=int, default=50,
                    help="agent 模式输出/收集的行数上限 (默认 50)")
     p.add_argument("--hard-cap", type=float, default=30.0,
@@ -210,6 +218,15 @@ def main(argv=None) -> int:
         cfg.sources = [s for s in cfg.sources if s.enabled]
         if args.max_line_len:
             cfg.max_line_len = args.max_line_len
+        if args.encoding:
+            import codecs as _codecs
+            try:
+                _codecs.lookup(args.encoding)          # 校验 codec 名是否合法
+            except LookupError:
+                print(f"logtail: --encoding 无效: {args.encoding!r} "
+                      f"(Python codec 名, 如 utf-8/gbk/gb2312)", file=sys.stderr)
+                return 2
+            cfg.encoding = args.encoding
         # fail-fast: --focus 按配置源名精确匹配(支持逗号/空格分隔多源);
         # typo/大小写错若静默 0 行, 会伪装成"没日志"。列出可用名便于自查。
         if args.focus:
@@ -273,7 +290,7 @@ def main(argv=None) -> int:
     if args.diagnose:
         import json
         from .reader import LogFollower
-        report = LogFollower(cfg.sources).diagnose()
+        report = LogFollower(cfg.sources, encoding=cfg.encoding).diagnose()
         total_files = sum(s["files"] for s in report)
         print(json.dumps({
             "kind": "logtail.diagnose",
@@ -306,7 +323,7 @@ def main(argv=None) -> int:
                         summary=args.summary, ctx_same=args.ctx_same,
                         as_json=args.as_json, focus=args.focus,
                         correlate=args.correlate, keep=args.keep,
-                        hard_cap=args.hard_cap)
+                        hard_cap=args.hard_cap, fail_if_empty=args.fail_if_empty)
         except RulePatternError as exc:
             print(f"logtail: --match 规则错误: {exc}", file=sys.stderr)
             return 2

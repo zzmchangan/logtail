@@ -219,5 +219,37 @@ keywords:
         self.assertEqual(self.read(p), once)                          # 幂等
 
 
+class TestValidateDiagnostics(unittest.TestCase):
+    def test_dup_source_names_warn(self):
+        """重名源应发 stderr 警告 (输出前缀会撞), 但不中断."""
+        import contextlib
+        import io
+        cfg = Config()
+        cfg.sources = [SourceConfig("s", "/tmp", "*.log"),
+                       SourceConfig("s", "/tmp", "*.txt")]     # 同名
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            cfg.validate()                 # 目录存在, 不抛 ConfigError
+        self.assertIn("重名", buf.getvalue())
+        self.assertIn("s", buf.getvalue())
+
+    def test_distinct_names_no_warn(self):
+        import contextlib
+        import io
+        cfg = Config()
+        cfg.sources = [SourceConfig("a", "/tmp", "*.log"),
+                       SourceConfig("b", "/tmp", "*.txt")]
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            cfg.validate()
+        self.assertNotIn("重名", buf.getvalue())
+
+    def test_encoding_loaded_from_yaml(self):
+        p = write_cfg("log_sources:\n  - name: a\n    path: /tmp\n    pattern: '*.log'\n"
+                      "encoding: gbk\n")
+        cfg = load_config(p)
+        self.assertEqual(cfg.encoding, "gbk")
+
+
 if __name__ == "__main__":
     unittest.main()

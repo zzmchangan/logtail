@@ -34,6 +34,8 @@ class TestFeed(unittest.TestCase):
         t.feed([line(str(i), i, i) for i in range(10)])
         self.assertEqual(len(t.ring), 3)
         self.assertEqual([ln.text for ln, _ in t.ring], ["7", "8", "9"])
+        self.assertEqual(t.fed_total, 10)                 # 累计喂入
+        self.assertEqual(t.fed_total - len(t.ring), 7)    # A6: 已丢弃 7 行更早
 
 
 class TestVisibleAll(unittest.TestCase):

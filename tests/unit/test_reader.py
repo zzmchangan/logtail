@@ -49,6 +49,23 @@ class FollowerCase(unittest.TestCase):
         return f
 
 
+class TestEncoding(FollowerCase):
+    def test_gbk_body_decoded(self):
+        """GBK 编码日志: 不指定 encoding 会乱码; --encoding gbk 应正常解出中文正文."""
+        with open(self.path, "wb") as f:
+            f.write("[2026-08-27 10:00:01.000000] scene     玩家进副本 错误\n".encode("gbk"))
+        f = LogFollower([SourceConfig("s", self.dir, "*.log")],
+                        history=1, encoding="gbk")
+        f.start()
+        try:
+            out = collect(f, want=1)
+        finally:
+            f.stop()
+        self.assertEqual(len(out), 1)
+        self.assertIn("玩家进副本", out[0].text)
+        self.assertNotIn("�", out[0].text)          # 无替换字符(未乱码)
+
+
 class TestTailSemantics(FollowerCase):
     def test_no_history_starts_at_eof(self):
         write(self.path, "old1\nold2\n")
