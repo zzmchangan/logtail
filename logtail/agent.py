@@ -15,7 +15,7 @@ import re
 import sys
 import time
 from bisect import bisect_left
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import List, Optional
 
 from .config import Config
@@ -39,20 +39,24 @@ def format_line(ln, text: str = None) -> str:
     return f"{ts} {ln.source:<12} {text if text is not None else ln.text}"
 
 
-def _json_line(ln, text: str = None) -> str:
+def _json_line(ln, text: str = None, fields: Optional[dict] = None) -> str:
     """把一条 LogLine 序列化成单个 JSON 对象 (NDJSON), 供 agent 编程级加工.
 
-    含 ts/ts_seconds(epoch)/source/level/text/seq, 便于按字段聚合与确定性重放。
+    含 ts/ts_seconds(epoch)/source/level/text/seq, 便于按字段聚合与确定性重放;
+    --fields 时额外带 "fields": {name: value} (结构化抽取, 省 AI 从长文本抠字段)。
     text 可传截断后的正文 (见 _truncate)。
     """
-    return json.dumps({
+    rec = {
         "ts": ln.time_str or fmt_hhmmss(ln.ts_seconds),
         "ts_seconds": ln.ts_seconds,
         "source": ln.source,
         "level": ln.level,
         "text": text if text is not None else ln.text,
         "seq": ln.seq,
-    }, ensure_ascii=False)
+    }
+    if fields:
+        rec["fields"] = fields
+    return json.dumps(rec, ensure_ascii=False)
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -65,10 +69,86 @@ def _truncate(text: str, max_len: int) -> str:
     return text[:max_len] + f" ...[logtail: 行过长已截断, 原文 {len(text)} 字符]"
 
 
-def _emit(ln, as_json: bool, max_len: int = 0) -> str:
-    """按 as_json 选择输出格式: 定宽文本 (默认) 或单行 JSON; 超长行先截断."""
+def _emit(ln, as_json: bool, max_len: int = 0, field_fn=None) -> str:
+    """按 as_json 选择输出格式: 定宽文本 (默认) 或单行 JSON; 超长行先截断.
+
+    field_fn(ln)->dict: --fields 时提取结构化字段, 注入 JSON 的 "fields"。
+    """
     text = _truncate(ln.text, max_len)
-    return _json_line(ln, text) if as_json else format_line(ln, text)
+    if as_json:
+        return _json_line(ln, text, fields=(field_fn(ln) if field_fn else None))
+    return format_line(ln, text)
+
+
+def _field_value(ln, field: str, correlator: "CorrelationKeys") -> Optional[str]:
+    """从一行抽出某字段值: 已知 key 用其 extract 正则, 未知 key 回退字面 'key='/'key:'."""
+    if correlator.is_defined(field):
+        return correlator.extract1(ln.text, field)
+    m = re.search(r"\b" + re.escape(field) + r"[:=]\s*\"?([^\s\"\]]+)", ln.text)
+    return normalize(m.group(1)) if m else None
+
+
+def _build_field_fn(fields: List[str], cfg: Config):
+    """构造 field_fn(ln)->dict, 用于 --fields 抽取 (None 表示不抽)."""
+    if not fields:
+        return None
+    correlator = CorrelationKeys(cfg.correlation_keys,
+                                 case_sensitive=cfg.case_sensitive)
+
+    def field_fn(ln):
+        out = {}
+        for f in fields:
+            v = _field_value(ln, f, correlator)
+            if v is not None:
+                out[f] = v
+        return out
+
+    return field_fn
+
+
+def _stats_output(filtered: List, fields: List[str], top: int, cfg: Config,
+                  as_json: bool, probe: List[dict], backlog_done: bool,
+                  latest_ts: Optional[float],
+                  correlate_info: Optional[dict] = None) -> int:
+    """--stats: 对过滤后的行按源/级别/字段值聚合, 输出统计 (非正文), 返回退出码.
+
+    filtered 已是 --count 同视野的命中行 (黑名单+级别+match/exclude/correlate+focus)。
+    字段值聚合复用 correlation key 抽取; stdout 默认文本表, --json 时输出 JSON。
+    """
+    by_source = Counter(ln.source for ln in filtered)
+    by_level = Counter(ln.level or "(none)" for ln in filtered)
+    top_hist = []
+    if fields:
+        correlator = CorrelationKeys(cfg.correlation_keys,
+                                     case_sensitive=cfg.case_sensitive)
+        for f in fields:
+            hist = Counter()
+            for ln in filtered:
+                v = _field_value(ln, f, correlator)
+                if v is not None:
+                    hist[v] += 1
+            top_hist.append({
+                "field": f,
+                "values": [{"value": v, "count": c}
+                           for v, c in hist.most_common(top)],
+            })
+    if as_json:
+        rec = {"kind": "logtail.stats", "lines": len(filtered),
+               "by_source": dict(by_source), "by_level": dict(by_level)}
+        if top_hist:
+            rec["top"] = top_hist
+        print(json.dumps(rec, ensure_ascii=False))
+    else:
+        print(f"== logtail.stats == lines={len(filtered)}")
+        print(f"source  " + "  ".join(f"{k}={c}" for k, c in by_source.most_common()))
+        print(f"level   " + "  ".join(f"{k}={c}" for k, c in by_level.most_common()))
+        for th in top_hist:
+            print(f"top {th['field']} ({top})")
+            for e in th["values"]:
+                print(f"  {e['value']:<16} {e['count']}")
+    _provenance(probe, False, len(filtered), latest_ts,
+                backlog_complete=backlog_done, anchor=cfg.anchor or None)
+    return 0
 
 
 def _build_match_rules(patterns: List[str], cfg: Config) -> List[Rule]:
@@ -190,7 +270,9 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
          ctx_same: int = 0, as_json: bool = False,
          focus: Optional[str] = None, correlate: Optional[str] = None,
          hard_cap: float = DUMP_HARD_CAP, keep: str = "tail",
-         fail_if_empty: bool = False) -> int:
+         fail_if_empty: bool = False,
+         fields: Optional[List[str]] = None,
+         stats: bool = False, top: int = 5) -> int:
     """收集最近若干行(经黑名单/可选 match/时间窗), 打印后退出.
 
     收集分两阶段 (BUG0001: 大窗口下固定 --wait 会把"读不完"伪装成"没有"):
@@ -229,6 +311,8 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
     def _hit(ln) -> bool:
         return (_apply(ln, blk, matchers, excludes, focus)
                 and (not has_correlate or _correl(ln)))
+
+    field_fn = _build_field_fn(fields, cfg)
 
     # history/since 多取一些, 让上下文窗/时间窗有素材
     hist = max(lines_n, cfg.history or 0)
@@ -326,6 +410,12 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
                           "lines_with_key": lines_with_key}
 
     # 选出命中行 (或全部重新过滤) 并决定输出
+    if stats:
+        # --stats: 输出统计而非正文 (同 --count 视野, 复用命中过滤)
+        filtered = [ln for ln in seen if _hit(ln)]
+        return _stats_output(filtered, fields or [], top, cfg, as_json,
+                             probe, backlog_done, latest_ts, correlate_info)
+
     if count_only:
         # count 不管有无 match: 统计通过 黑名单+级别+match/exclude+correlate 的行数
         n_hit = sum(1 for ln in seen if _hit(ln))
@@ -343,7 +433,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
                   f"{'前' if keep == 'head' else '后'} {len(out)} 条 "
                   f"(调大 --lines 或 --keep head|tail 切换保留端)", file=sys.stderr)
         for ln in out:
-            print(_emit(ln, as_json, cfg.max_line_len))
+            print(_emit(ln, as_json, cfg.max_line_len, field_fn))
         _provenance(probe, summary, len(out), latest_ts,
                     backlog_complete=backlog_done, anchor=cfg.anchor or None)
         return _end(fail_if_empty, len(out))
@@ -386,7 +476,7 @@ def dump(cfg: Config, match: Optional[str], lines_n: int,
               f"(调大 --lines 或 --keep head|tail 切换保留端)", file=sys.stderr)
 
     for i in out_idx:
-        print(_emit(seen[i], as_json, cfg.max_line_len))
+        print(_emit(seen[i], as_json, cfg.max_line_len, field_fn))
     if correlate_info:
         correlate_info["matched"] = len(out_idx)
     _provenance(probe, summary, len(out_idx), latest_ts, correlate_info,
@@ -514,14 +604,20 @@ def discover_keys(cfg: Config, lines_n: int, wait: float = 2.0,
 def monitor(cfg: Config, match: Optional[str], lines_n: int,
             exclude: Optional[str] = None, summary: bool = False,
             as_json: bool = False, focus: Optional[str] = None,
-            correlate: Optional[str] = None) -> int:
-    """持续把过滤后的日志打到 stdout, 直到 Ctrl+C."""
+            correlate: Optional[str] = None, separator: bool = False,
+            fields: Optional[List[str]] = None) -> int:
+    """持续把过滤后的日志打到 stdout, 直到 Ctrl+C.
+
+    separator: 源切换时插入 '──[source]──' 分隔行 (仅文本模式, 便于人肉扫管道)。
+    fields   : --fields 抽取, 注入 --json 的 "fields"。
+    """
     matchers = _build_match_rules(_split_terms(match), cfg)
     excludes = _build_exclude_rules(_split_terms(exclude), cfg)
     blk = _build_blk(cfg)
     c_key, c_raw_val, c_val = _split_correlate(correlate)
     correlator = CorrelationKeys(cfg.correlation_keys,
                                  case_sensitive=cfg.case_sensitive)
+    field_fn = _build_field_fn(fields, cfg)
 
     def _correl(ln) -> bool:
         if c_key is None:
@@ -535,14 +631,20 @@ def monitor(cfg: Config, match: Optional[str], lines_n: int,
     follower.start()
     warned = False
     graces = 0
+    last_source = None
     try:
         while True:
             batch = follower.queue.drain()
             for ln in batch:
                 if (_apply(ln, blk, matchers, excludes, focus)
                         and (not correlate or _correl(ln))):
-                    print(_emit(ln, as_json, cfg.max_line_len))
+                    if (separator and not as_json and last_source is not None
+                            and ln.source != last_source):
+                        print(f"──────[{ln.source}]──────")
+                        sys.stdout.flush()
+                    print(_emit(ln, as_json, cfg.max_line_len, field_fn))
                     sys.stdout.flush()
+                    last_source = ln.source
             graces += 1
             # 一次性提示: 启动约 1s 后若仍无任何发现 (dx 慢/失败/空目录), 打诊断到 stderr
             if not warned and graces >= 20:

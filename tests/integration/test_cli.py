@@ -93,7 +93,8 @@ class TestOutputContract(CliCase):
                        "case-sensitive", "anchor", "discover-keys",
                        "--at", "--keep", "--blacklist-del", "--no-blacklist",
                        "--enable-source", "max-line-len", "回溯深度",
-                       "--fail-if-empty", "--encoding"):
+                       "--fail-if-empty", "--encoding", "--fields",
+                       "--stats", "--separator"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):
@@ -190,6 +191,48 @@ class TestFilteringMatrix(CliCase):
         r = self.A()
         self.assertNotIn("heartbeat", r.stdout)
         self.assertEqual(len(r.stdout.strip().splitlines()), 8)      # 9-1
+
+    def test_fields_json(self):
+        """--json --fields: 每行注入结构化字段 (已知 key 用 extract 正则)."""
+        r = self.A("--json", "--fields", "player")
+        self.assertEqual(r.returncode, 0)
+        lines = [json.loads(l) for l in r.stdout.strip().splitlines() if l]
+        self.assertTrue(lines)
+        # 含 player 的行(多种写法 player=/roleId:/Guid:) 应全部抽出 fields.player
+        with_player = [l for l in lines
+                       if ("player=" in l["text"] or "roleId" in l["text"]
+                           or "Guid:" in l["text"])]
+        self.assertTrue(with_player, "fixture 应含 player 行")
+        for l in with_player:
+            self.assertIn("player", l.get("fields", {}))
+            self.assertTrue(l["fields"]["player"])
+        # 无 player 关键字的行: 不应凭空带出 player
+        for l in lines:
+            if not ("player=" in l["text"] or "roleId" in l["text"]
+                    or "Guid:" in l["text"]):
+                self.assertNotIn("player", l.get("fields", {}))
+
+    def test_stats_text(self):
+        """--stats: 输出按源/级别计数 (文本表)."""
+        r = self.A("--stats")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("logtail.stats", r.stdout)
+        self.assertIn("source", r.stdout)
+        self.assertIn("level", r.stdout)
+
+    def test_stats_json_top(self):
+        """--stats --json --fields X --top N: JSON 统计 + 字段值 TopN."""
+        r = self.A("--stats", "--json", "--fields", "player", "--top", "2")
+        self.assertEqual(r.returncode, 0)
+        rec = json.loads(r.stdout)
+        self.assertEqual(rec["kind"], "logtail.stats")
+        self.assertEqual(rec["by_source"]["scene"], 4)      # heartbeat 被黑名单滤掉
+        self.assertEqual(rec["by_source"]["guild"], 4)
+        top = rec["top"][0]
+        self.assertEqual(top["field"], "player")
+        self.assertLessEqual(len(top["values"]), 2)
+        for e in top["values"]:                              # 值非空且计数递减
+            self.assertGreater(e["count"], 0)
 
     def test_global_time_order(self):
         r = self.A()
@@ -808,6 +851,17 @@ class TestMonitor(CliCase):
         rc, out, err = self.monitor("--correlate", "player=100")
         self.assertEqual(rc, 0)
         self.assertEqual(len(out.strip().splitlines()), 4)
+
+    def test_monitor_separator(self):
+        """--separator: 源切换时插入分隔框 (仅文本模式), 便于人肉扫管道."""
+        rc, out, err = self.monitor("--separator")
+        self.assertEqual(rc, 0)
+        self.assertIn("──[", out)          # 至少一次源切换分隔
+        self.assertNotIn("Traceback", err)
+        # --json 下不插分隔 (不破坏 NDJSON 消费方)
+        rc2, out2, _ = self.monitor("--separator", "--json")
+        self.assertEqual(rc2, 0)
+        self.assertNotIn("──[", out2)
 
     def test_monitor_exits_cleanly_on_broken_pipe(self):
         """head 提前关闭管道不应打 traceback (README 承诺可管道)."""

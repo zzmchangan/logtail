@@ -11,12 +11,15 @@
 
 from __future__ import annotations
 
+import bisect
 import curses
 import os
+import re
 import subprocess
 import time
 import unicodedata
-from typing import List, Optional, Sequence, Tuple
+from datetime import datetime
+from typing import List, Optional, Sequence, Set, Tuple
 
 from . import __version__
 from .agent import format_line
@@ -71,6 +74,10 @@ class Tui:
         self.view_anchor: Optional[LogLine] = None   # 冻结时钉在顶部的日志行
         self.view_offset: int = 0                     # 该行折行后从第几段开始显示
         self.need_refresh = False                # 是否有新行, 重置自动回底
+
+        # 每源开关 (/source): muted=静音源集合, only=只看该源 (显示层过滤, 照读照存)
+        self.muted_sources: Set[str] = set()
+        self.only_source: Optional[str] = None
 
         # 搜索状态: 回车裁决 (命令->执行, 非命令->搜索); n/N 上下跳
         self.search_active = False
@@ -229,7 +236,7 @@ class Tui:
         status_h = 1
         log_h = max(0, h - input_h - status_h)
 
-        visible = self.timeline.visible()
+        visible = self._vis()
         # 只折可见窗口 (window-bounded): 环形缓冲最大 20000 行, 若每帧全折一遍
         # wrap_text 要 300ms+, 主循环直接卡死。这里只折视口需要的那几行。
         rows = self._window(visible, log_h, w)
@@ -282,6 +289,20 @@ class Tui:
             except curses.error:
                 pass
         return 80
+
+    # ------------------------------------------------------------------
+    # 每源开关 (/source): 显示层过滤
+    # ------------------------------------------------------------------
+    def _source_kept(self, ln: LogLine) -> bool:
+        """该行来源是否应显示 (only 优先, 其次 not muted)."""
+        if self.only_source is not None:
+            return ln.source == self.only_source
+        return ln.source not in self.muted_sources
+
+    def _vis(self) -> List:
+        """当前应显示的可见行列表 (含 /source 过滤), 供渲染与滚动共用."""
+        return [(ln, hl, dim) for ln, hl, dim in self.timeline.visible()
+                if self._source_kept(ln)]
 
     def _segments(self, line: LogLine, w: int) -> List[str]:
         """某条日志行在宽度 w 下折成的显示段 (续行无前缀)."""
@@ -603,7 +624,7 @@ class Tui:
             return None, self._cmd_history(+1), ""
 
         # 输入框为空时 ↑/↓ 走滚动
-        visible = self.timeline.visible()
+        visible = self._vis()
         w = self._term_w()
         log_h = max(1, self._log_h())
 
@@ -685,7 +706,7 @@ class Tui:
                     fh.write(f"bstate=0x{bstate:x} dec={bstate}\n")
             except OSError:
                 pass
-        visible = self.timeline.visible()
+        visible = self._vis()
         w = self._term_w()
         log_h = max(1, self._log_h())
         step = max(3, log_h // 3)           # 每次滚 3 行 (或 1/3 屏)
@@ -783,7 +804,7 @@ _KNOWN_COMMANDS = {
     "-C", "/context", "/ctx", "/all", "--all",
     "/pause", "/resume", "/blacklist", "/bl", "/unblacklist", "/ubl",
     "/level", "/trace", "/list", "/save", "/reset", "/help", "/?", "/quit", "/q",
-    "/less",
+    "/less", "/goto", "/source",
 }
 
 
@@ -829,6 +850,10 @@ def _run_command(tui: Tui, raw: str) -> str:
         return _list(tui)
     if head == "/less":
         return _less(tui)
+    if head == "/goto":
+        return _goto(tui, parts)
+    if head == "/source":
+        return _source_cmd(tui, parts)
     if head == "/save":
         return _save(tui)
     if head == "/reset":
@@ -1011,6 +1036,105 @@ def _list(tui: Tui) -> str:
             f"暂停: {'是' if tui.paused else '否'}")
 
 
+# ---------------------------------------------------------------------------
+# /goto: 按时间跳转 (作用于环形缓冲内)
+# ---------------------------------------------------------------------------
+_GOTO_FULL = re.compile(
+    r"^\s*(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2}):(\d{2})(?:[.,](\d{1,6}))?\s*$"
+)
+_GOTO_TIME = re.compile(
+    r"^\s*(\d{1,2}):(\d{2}):(\d{2})(?:[.,](\d{1,6}))?\s*$"
+)
+
+
+def _goto_base_midnight(tui: Tui) -> float:
+    """决定 /goto 纯时间所锚的日期: 优先缓冲首行的日期 (reader 已把该批锚到某天)."""
+    items = tui.timeline.ring._items
+    if items:
+        return datetime.fromtimestamp(items[0][0].ts_seconds).replace(
+            hour=0, minute=0, second=0, microsecond=0).timestamp()
+    return datetime.now().replace(hour=0, minute=0, second=0,
+                                  microsecond=0).timestamp()
+
+
+def _parse_goto_spec(tui: Tui, spec: str):
+    """把 '/goto HH:MM:SS[.ms]' 或 '/goto YYYY-MM-DD HH:MM:SS' 解析为 (epoch, 人读串)."""
+    s = spec.strip()
+    m = _GOTO_FULL.match(s)
+    if m:
+        y, mo, d, hh, mm, ss = (int(m.group(i)) for i in range(1, 7))
+        frac = int((m.group(7) or "").ljust(6, "0")[:6] or 0)
+        dt = datetime(y, mo, d, hh, mm, ss)
+        return dt.timestamp() + frac / 1e6, s
+    m = _GOTO_TIME.match(s)
+    if m:
+        hh, mm, ss = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        frac = int((m.group(4) or "").ljust(6, "0")[:6] or 0)
+        secs = hh * 3600 + mm * 60 + ss
+        return _goto_base_midnight(tui) + secs + frac / 1e6, s
+    return None
+
+
+def _goto(tui: Tui, parts) -> str:
+    if len(parts) < 2:
+        return "/goto 用法: /goto HH:MM:SS 或 /goto YYYY-MM-DD HH:MM:SS (跳到缓冲内该时刻)"
+    parsed = _parse_goto_spec(tui, parts[1])
+    if parsed is None:
+        return f"/goto 时间无效: {parts[1]!r}"
+    target, shown = parsed
+    items = tui.timeline.ring._items
+    if not items:
+        return "缓冲为空, 无行可跳"
+    ts = [ln.ts_seconds for ln, _ in items]      # 仅命令时构建, 可接受
+    idx = bisect.bisect_left(ts, target)
+    if idx >= len(items):
+        idx = len(items) - 1
+    tui.view_anchor, tui.view_offset = items[idx][0], 0
+    # 把它移到视口中部 (向上走半屏)
+    visible = tui._vis()
+    tui._scroll_by(visible, tui._term_w(), -((tui._log_h() or 20) // 2))
+    return f"已跳到 {shown} (缓冲内第 {idx + 1} 行附近)"
+
+
+# ---------------------------------------------------------------------------
+# /source: 每源开关 (显示层过滤)
+# ---------------------------------------------------------------------------
+def _source_cmd(tui: Tui, parts) -> str:
+    if len(parts) < 2:
+        names = sorted({s.name for s in tui.cfg.sources})
+        kept = []
+        for n in names:
+            st = "只看" if tui.only_source == n else (
+                "隐藏" if n in tui.muted_sources else "显示")
+            kept.append(f"{n}:{st}")
+        return (f"源状态: {', '.join(kept)}  |  用法: /source <名> off|on|only | /source all\n"
+                f"(off=只看不到 | only=只看它 | all=清除全部开关)")
+    name = parts[1]
+    if name == "all":
+        tui.muted_sources.clear()
+        tui.only_source = None
+        return "已清除全部源开关"
+    if len(parts) < 3:
+        return f"用法: /source {name} off|on|only"
+    action = parts[2].lower()
+    known = {s.name for s in tui.cfg.sources}
+    if name not in known:
+        return f"源 {name} 不在当前配置里 (可用: {', '.join(sorted(known)) or '(无)'})"
+    if action == "off":
+        tui.muted_sources.add(name)
+        if tui.only_source == name:
+            tui.only_source = None
+        return f"已隐藏源 {name}"
+    if action == "on":
+        tui.muted_sources.discard(name)
+        return f"已显示源 {name}"
+    if action == "only":
+        tui.only_source = name
+        tui.muted_sources.discard(name)
+        return f"只显示源 {name}"
+    return f"用法: /source {name} off|on|only"
+
+
 def _save(tui: Tui) -> str:
     # 去掉可能有缩写的重复? 直接取原始 pattern 列表
     hl = [r.pattern for r in tui.ruleset.list_highlights()]
@@ -1055,6 +1179,7 @@ _HELP = (
     "显示: -C|/context|/ctx N 上下文前后N行 | /all|--all 全量 | /pause /resume 暂停/恢复\n"
     "过滤: /blacklist|/bl 规则 [规则...] 加黑名单(支持 re:) | /unblacklist|/ubl 移除\n"
     "滚动: ↑↓逐行 PgUp/PgDn或Ctrl-B/Ctrl-F翻页 Home/g最顶 End/G最底 滚轮上/下 回车跳最新\n"
+    "跳转/收窄: /goto HH:MM:SS 跳到缓冲内某时刻 | /source 名 off|on|only 每源开关 /source all 清除\n"
     "配置: /list 状态 | /save 写回配置(仅此命令落盘) | /reset 重读配置重开 | /help | /quit|/q|Ctrl+C\n"
     "复制: /less 分页器查看缓冲(原生选择/搜索, q返回; 部分终端 Shift+拖拽也可原生选中)"
 )

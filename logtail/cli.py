@@ -47,7 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
             "作用域提示:\n"
             "  --lines/--wait/--count 仅 agent 生效; --mode monitor 忽略 -C/--since/--count。\n"
             "  --since(dump) 以窗口内最新日志时间戳为参考; '-C 5s' 时间窗仅交互版可用 (agent 的 -C 只接受行数)。\n"
-            "  TUI 交互: 回溯深度默认 20000 行; 冻结锚内容行不漂移, 渲染只折可见窗防洪峰卡死。\n"
+            "  TUI 交互: 回溯深度默认 20000 行; 冻结锚内容行不漂移, 渲染只折可见窗防洪峰卡死;\n"
+            "  命令 /goto HH:MM:SS 时间跳转, /source 名 off|on|only 每源开关(仅交互版)。\n"
             "  --encoding <codec> 日志文件编码(默认 utf-8): GBK/GB2312 日志不指定会乱码, 可配 config 'encoding:'。\n"
             "  --wait(dump) 是backlog完成后实时跟随的时长(默认0, 活水下idle不触发; 跟随给--wait 5);\n"
             "  --since 裸数字=秒(90=90s); --hard-cap 可调大宽窗读取上限(默认30s)。\n"
@@ -58,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  管道纪律: | head 超量截断会偏离 exit 0/2 契约(SIGPIPE); 截断用 --lines N, 判 $? 前别接 head。\n"
             "  --correlate key=value 关联键(抽取+归一化跨源对齐; 未定义 key 回退字面子串);\n"
             "  --summary 的 correlate 自报 lines_with_key 用于判断正则是否写歪/key 是否有区分度。\n"
+            "  --fields <名>,... 每行抽结构化字段(已知 key 用 extract 正则, 未知回退 'key='; 适配 --json)。\n"
+            "  --stats [--json] 输出统计而非正文(按源/级别, 配 --fields X --top N 再按字段值 TopN; 与 --count 同视野);\n"
+            "  --separator monitor 源切换插 '──[source]──' 分隔行(仅文本模式, 默认关)。\n"
             "  --discover-keys 采样自报候选关联键的区分度/跨源分布(与 correlate 同视野含黑名单);\n"
             "  --anchor <epoch> 钉死 since 窗口 [anchor-since, anchor], 跨次 count 可比(需配 --since)。\n"
             "  --at 'YYYY-MM-DD HH:MM:SS' 人读时间的锚点(与 --anchor 互斥); --keep head|tail 选\n"
@@ -100,6 +104,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--correlate", default=None,
                    help="按关联键对齐: 跨源只留抽出该 id 的行, 如 --correlate player=123; "
                         "key 在 config correlation_keys/预设里=抽取+归一化, 未定义=回退字面 --trace")
+    p.add_argument("--fields", default=None,
+                   help="(agent) 每行额外抽出的字段, 逗号/空格分隔, 如 --fields player,scene_id; "
+                        "已知 key 用其 extract 正则, 未知 key 回退字面 'key=' —— 配合 --json 让 AI 直接拿字段")
+    p.add_argument("--stats", action="store_true",
+                   help="(agent) 输出统计而非正文: 按源/级别计数 (同 --count 的过滤视野), "
+                        "配 --fields X --top N 再按字段值聚合 TopN; 默认文本表, --json 时输出 JSON")
+    p.add_argument("--top", type=int, default=5,
+                   help="(agent, 配合 --stats --fields) 字段值聚合的 Top N (默认 5)")
+    p.add_argument("--separator", action="store_true",
+                   help="(monitor) 源切换时插入 '──[source]──' 分隔行, 便于人肉扫管道 (仅文本模式)")
     p.add_argument("--case-sensitive", action="store_true",
                    help="agent 模式所有文本匹配区分大小写(裸词/正则/黑名单/correlate 抽取)。"
                         "默认不敏感(--match ERROR 能命中 [Error]); 要精确(区分 Dragon 玩法与 "
@@ -307,12 +321,15 @@ def main(argv=None) -> int:
     # AI Agent 模式: 不走 curses, 直接输出纯文本
     if args.agent:
         from .agent import dump, monitor
+        from .agent import _split_terms as _agent_terms
+        fields = _agent_terms(args.fields)
         try:
             if args.agent_mode == "monitor":
                 return monitor(cfg, args.match, args.lines,
                                exclude=args.exclude, summary=args.summary,
                                as_json=args.as_json, focus=args.focus,
-                               correlate=args.correlate)
+                               correlate=args.correlate, separator=args.separator,
+                               fields=fields)
             # dump: --context/-C 可当作命中行的上下文窗口 (结合 --match 用)
             # --trace 作为 match 但零上下文 (纯命中行, 无邻居)
             match = args.trace if args.trace else args.match
@@ -323,7 +340,8 @@ def main(argv=None) -> int:
                         summary=args.summary, ctx_same=args.ctx_same,
                         as_json=args.as_json, focus=args.focus,
                         correlate=args.correlate, keep=args.keep,
-                        hard_cap=args.hard_cap, fail_if_empty=args.fail_if_empty)
+                        hard_cap=args.hard_cap, fail_if_empty=args.fail_if_empty,
+                        fields=fields, stats=args.stats, top=args.top)
         except RulePatternError as exc:
             print(f"logtail: --match 规则错误: {exc}", file=sys.stderr)
             return 2

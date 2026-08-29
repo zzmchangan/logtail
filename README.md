@@ -134,6 +134,9 @@ correlation_keys:
 - `--count`: 只输出命中行数 (经 黑名单/级别/match/exclude 过滤后), 快速判断这段时是否爆发。
 - `--fail-if-empty`: **0 条命中时以退出码 1 结束**——脚本/CI 里 `if ! logtail ... ; then` 断言"没有报错"。默认仍为退出码 0 (契约不变); 仅有此 flag 时命中 0 行改回 1。
 - `--encoding <codec>`: **日志文件编码** (默认 utf-8)。国产系统日志常见 GBK/GB2312, 不指定会乱码且正文错位 (时间戳/来源列是 ASCII 不受影响, 但正文中文变乱)。可配成 config 顶层 `encoding: gbk`, 或用每次 `--encoding gbk`。
+- `--fields <名>[,<名>...]`: **每行额外抽出的结构化字段** (配合 `--json`)。已知 key 用其 extract 正则、未知 key 回退字面 `key=` —— 让 AI 直接拿 `fields.{player}` 而不用从长文本抠, 省 token。
+- `--stats` / `--stats --json` / `--fields X --top N`: **输出统计而非正文**。默认按源/级别计数(文本表), `--json` 时输出 JSON; 配 `--fields X --top N` 再按字段值聚合 TopN。统计范围与 `--count` 同一视野 (黑名单+级别+match/exclude/correlate)。
+- `--separator`: **(monitor)** 源切换时插入 `──────[source]──────` 分隔行, 便于人肉扫多源管道 (仅文本模式; `--json` 时不插, 避免破坏 NDJSON)。
 - 黑名单**始终生效**; 不带 `--match`/`-C` 时输出黑名单过滤后的全部最近 N 行。
 - Agent 修 bug 的用法: 先 `--match` 收窄到错误行 → `-C` 补上下文 → `--since` 限时间段 → `re:` 正则再收窄 → 拿到极少量却完整的线索。
 
@@ -193,7 +196,8 @@ logtail --agent --config config.yaml --blacklist-del debug --focus team --since 
 - **`--lines` vs `--history`**: agent 收集量 = `max(lines, history)`, 输出取最后 `lines` 条。
 - **`--since` (dump)**: 以**窗口内最新一条日志**的时间戳为参考 (`最新 - since`), 而非 wall-clock —— 所以配合历史 `--date` 扫描也不会被清空。
 - **`--summary`**: 把"发现诊断"(JSON)打到 **stderr**。**空结果/`--count 0` 时先看 stderr**: 有 `warning:` 或 JSON 里 `total_files==0` / 某源 `discovered:false` / `dx_error` 非空 → 是"**源没被发现**", 不是"没错误" (避免 'exit 0 + 空输出' 假阴性); 都正常 `files>0` 才可信。stdout 仍只放日志/计数。**`backlog_complete: false`** 表示硬上限内历史窗口没读完——count 偏小勿当结论; `sources[]` 里每源有 `backlog_ready`, 未读完的源会被 warning **点名**(定位是哪个源慢/大)。给了 `--anchor` 时 summary 也会报出 `anchor` 字段(跨次可比的凭据)。
-- **`--json` 契约**: 每行一个 JSON 对象 `{"ts","ts_seconds","source","level","text","seq"}`。`ts` 供人读/对齐窗口, `ts_seconds` 为 epoch 秒供排序比较, `seq` 供确定性重放; `--count`/`--summary` 不受影响(仍只在各自位置)。
+- **`--json` 契约**: 每行一个 JSON 对象 `{"ts","ts_seconds","source","level","text","seq"}`。`ts` 供人读/对齐窗口, `ts_seconds` 为 epoch 秒供排序比较, `seq` 供确定性重放; 加 `--fields` 时额外多一个 `"fields":{...}` (纯新增, 不破坏既有字段)。`--count`/`--summary` 不受影响(仍只在各自位置)。
+- **非日志体输出 (均走 stdout, 契约之外的"报告"形态)**: `--stats` 输出一份统计报告(文本表或 `--json` 的单文档), `--separator` 在 monitor 源切换时插 `──────[source]──────` 分隔行——两者都是**可选/默认关**, 不要它们时就完全没有, 不影响"stdout 只放日志/计数"的常规解读。
 - **`--summary` 锚点**: JSON 里含 `latest_ts`——`--since` 实际锚定的"最新一条日志时间戳"。agent 据它自校验"这个窗口对齐的是哪个时间", 尤其注意 GM 调时间(multiTimeOffset)会让日志时间≠墙钟, 别用墙钟去对。
 - **`--diagnose`**: 独立健康检查(不 tail), JSON 到 stdout。**拿到空结果先跑它**: 若某源 `discovered:false`/`dx_error` 非空 → 源没被找到, 别下"无错误"结论。判"源活着"看 `files>0 且 discovered=true`; `latest_ts` 在活跃写入的文件上可能**瞬态为 null**(尾部块恰好无完整时间戳行), 重跑即恢复, 别单依赖它。
 - **`--since` 的优先级与定位**: 给了 `--since` 就**按时间戳定位采集起点**(`--lines`/`--history` 不再决定回溯量)。主路径是**时间戳二分定位**——日志按行追加、时间戳单调不减时,几十次 seek 即可定位任意久远窗口的起点,**不受文件大小限制**(474MB 也能回看 2h)。二分失败(无时间戳行/非单调/超长行)才退化到**尾部 8MB 扫描兜底**,此时 stderr 打 `warning: ... 退化为尾部 8MB 扫描`——窗口前部旧行读不到,`--match` 可能漏掉窗口边缘命中。
@@ -267,6 +271,8 @@ logtail --agent --config config.yaml --blacklist-del debug --focus team --since 
 - **回溯深度 20000 行**: 交互版滚动缓冲默认保留最近 20000 行 (旧版 4000)。日志量大时想翻得更早, 加大 `--since`/`--history` 读入量即可 (读入多少由它们定, 不改变屏幕可见深度)。
 - **冻结锚内容而非行号**: 冻住的是顶部那条**日志行本身**, 而不是一个行号。环形缓冲从头部淘汰旧行时, 冻住的内容按对象身份重新定位**不会漂走**; 只有当你继续向下滚回到底部时, 或冻住的那行已被 `--since`/`/clear` 等挤到缓冲之外, 才自动解除冻结、恢复跟底。
 - **触顶提示**: 冻结并翻到缓冲最顶时, 状态栏会标 `已丢弃 N 行更早`——让你知道更早的日志已被 20000 行缓冲淘汰 (想看得更深就加大 `--since`/`--history` 读入)。
+- **时间跳转 `/goto`**: `/goto HH:MM:SS` 或 `/goto YYYY-MM-DD HH:MM:SS` 直接跳到缓冲内该时刻 (不再一屏屏滚)。目标早于缓冲起点会提示; 想看更早就加大 `--since`/`--history`。
+- **每源开关 `/source`**: `/source scene off` 藏掉某源、`/source scene only` 只看它、`/source all` 清除开关。是**显示层过滤**(照读照存, 随时切回), 比全局黑名单更聚焦("这个进程太吵")。
 - **键位**:
   - `↑`/`↓` 逐行
   - `PgUp`/`PgDn` 翻页
