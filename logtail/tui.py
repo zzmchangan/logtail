@@ -25,7 +25,7 @@ from . import __version__
 from .agent import format_line
 from .config import Config, ConfigError, load_config, save_config
 from .models import LogLine, PALETTE_FG_COLORS, ColorPool, fmt_hhmmss
-from .reader import LogFollower
+from .reader import LIVE_QUEUE_MAX, LogFollower
 from .rules import RulePatternError, RuleSet
 from .timeline import MODE_ALL, MODE_CONTEXT, MODE_TRACE, Timeline
 
@@ -49,7 +49,8 @@ class Tui:
         self.timeline = Timeline(self.ruleset)
         self.timeline.set_context_n(cfg.context_n or DEFAULT_CONTEXT_N)
         self.follower = LogFollower(cfg.sources, history=cfg.history,
-                                    since=cfg.since, encoding=cfg.encoding)
+                                    since=cfg.since, encoding=cfg.encoding,
+                                    queue_maxlen=LIVE_QUEUE_MAX)
         if cfg.level:
             try:
                 self.ruleset.set_level_filter(cfg.level)
@@ -875,16 +876,20 @@ def _add_keyword(tui: Tui, parts) -> str:
     pats = parts[1:]
     if not pats:
         return "用法: /keyword <词> [<词>...]  (或 /k 词1 词2 ...)"
-    added, errors = [], []
+    added, errors, cat = [], [], []
     for pat in pats:
         try:
-            tui.ruleset.add(pat, "highlight")
+            rule = tui.ruleset.add(pat, "highlight")
             added.append(pat)
+            if rule.catastrophic:
+                cat.append(pat)
         except RulePatternError as exc:
             errors.append(f"{pat!r}: {exc}")
     msg = f"已添加 {len(added)} 个高亮词: {', '.join(added)}"
     if errors:
         msg += f"  |  失败: {'; '.join(errors)}"
+    if cat:
+        msg += f"  |  ⚠ 正则 {', '.join(cat)} 形似灾难性回溯(嵌套量词), 长文本上可能卡死"
     if added:
         tui.timeline.rehash()          # 让存量行立即按新规则着色
     return msg
@@ -929,16 +934,20 @@ def _add_blacklist(tui: Tui, parts) -> str:
     pats = parts[1:]
     if not pats:
         return "用法: /blacklist <规则> [<规则>...]  (或 /bl)"
-    added, errors = [], []
+    added, errors, cat = [], [], []
     for pat in pats:
         try:
-            tui.ruleset.add(pat, "blacklist")
+            rule = tui.ruleset.add(pat, "blacklist")
             added.append(pat)
+            if rule.catastrophic:
+                cat.append(pat)
         except RulePatternError as exc:
             errors.append(f"{pat!r}: {exc}")
     msg = f"已添加 {len(added)} 个黑名单: {', '.join(added)}"
     if errors:
         msg += f"  |  失败: {'; '.join(errors)}"
+    if cat:
+        msg += f"  |  ⚠ 正则 {', '.join(cat)} 形似灾难性回溯(嵌套量词), 长文本上可能卡死"
     return msg
 
 

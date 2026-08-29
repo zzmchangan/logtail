@@ -9,7 +9,7 @@ import time
 import unittest
 
 from logtail.models import LogLine, SourceConfig
-from logtail.reader import LogFollower, _last_timestamp
+from logtail.reader import LogFollower, _UnboundedQueue, _last_timestamp
 
 
 def tmpdir() -> str:
@@ -373,6 +373,40 @@ class TestDiagnose(unittest.TestCase):
         p = os.path.join(tmpdir(), "g.log")
         write(p, "no timestamps here\nat all\n")
         self.assertIsNone(_last_timestamp(p))
+
+
+class TestQueueBound(unittest.TestCase):
+    def test_maxlen_drops_oldest(self):
+        """实时模式限长: 满则丢最旧, 并累计 dropped (防持续洪峰 OOM)."""
+        q = _UnboundedQueue(maxlen=3)
+        for i in range(5):
+            q.put(i)
+        self.assertEqual(len(q), 3)
+        self.assertEqual(q.dropped, 2)
+        self.assertEqual(q.drain(), [2, 3, 4])       # 丢掉了最旧的 0,1
+
+    def test_default_unbounded(self):
+        """默认 (dump 一次性收集) 不设限, 保持旧行为."""
+        q = _UnboundedQueue()
+        for i in range(100):
+            q.put(i)
+        self.assertEqual(len(q), 100)
+        self.assertEqual(q.dropped, 0)
+        self.assertEqual(q.drain(), list(range(100)))
+
+    def test_take_upto_bounded(self):
+        q = _UnboundedQueue(maxlen=10)
+        for i in range(50):
+            q.put(i)
+        # 限长后只留最近 10 条; take_upto 取前 N, 其余留队
+        self.assertEqual(len(q), 10)
+        first = q.take_upto(4)
+        self.assertEqual(first, [40, 41, 42, 43])
+        self.assertEqual(len(q), 6)
+
+    def test_follower_queue_maxlen(self):
+        f = LogFollower([SourceConfig("s", "/tmp", "*.log")], queue_maxlen=5)
+        self.assertEqual(f.queue.maxlen, 5)
 
 
 if __name__ == "__main__":

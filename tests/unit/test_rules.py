@@ -2,11 +2,30 @@
 
 import unittest
 
-from logtail.rules import Rule, RulePatternError, RuleSet
+from logtail.rules import Rule, RulePatternError, RuleSet, looks_catastrophic
 
 
 def rs(**kw) -> RuleSet:
     return RuleSet(keywords=kw.get("k"), blacklist=kw.get("b"))
+
+
+class TestCatastrophicHeuristic(unittest.TestCase):
+    def test_nested_quantifier_detected(self):
+        """组内有量词且整体再被 +/* 量化 = 经典灾难性回溯形态."""
+        for pat in ("(a+)+", "(.*)+", r"(\w+)*", "(a*)*b", r"(\d+)+"):
+            self.assertTrue(looks_catastrophic(pat), pat)
+
+    def test_benign_not_flagged(self):
+        """替代/普通量词不算灾难性 (启发式, 别误伤)."""
+        for pat in ("(a|b)+", "a+b", r"\d{2,4}", "plain", "(abc)*", r"(?:ab)+"):
+            self.assertFalse(looks_catastrophic(pat), pat)
+
+    def test_rule_marks_catastrophic_flag(self):
+        rs = RuleSet()
+        bad = rs.add("re:(a+)+", "highlight")
+        self.assertTrue(bad.catastrophic)
+        ok = rs.add("re:(a|b)+", "highlight")
+        self.assertFalse(ok.catastrophic)
 
 
 class TestRule(unittest.TestCase):

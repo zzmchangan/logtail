@@ -166,5 +166,36 @@ class TestModeValidation(unittest.TestCase):
             make().set_mode("bogus")
 
 
+class TestCrossBatchOrder(unittest.TestCase):
+    """跨批时间有序回归: 环内全局按 (ts_key, seq) 排序, 而非"每批近似有序"."""
+
+    def test_straggler_inserted_in_ts_order(self):
+        """掉队的慢源(第二批才到且时间戳更早)应插进正确位置."""
+        t = make()
+        t.feed([line("a", 9.0, 1), line("d", 10.0, 2)])
+        t.feed([line("b", 9.5, 3), line("c", 9.7, 4)])      # 慢源掉队, ts 在 a~d 之间
+        self.assertEqual([ln.text for ln, _ in t.ring],
+                         ["a", "b", "c", "d"])               # 全局有序, 不再串在末尾
+
+    def test_inorder_batches_stay_sorted(self):
+        t = make()
+        t.feed([line("a", 1.0, 1)])
+        t.feed([line("b", 2.0, 2)])
+        t.feed([line("c", 3.0, 3)])
+        self.assertEqual([ln.text for ln, _ in t.ring], ["a", "b", "c"])
+
+    def test_cross_batch_eviction_by_ts(self):
+        t = Timeline(RuleSet(), maxlen=4)
+        t.feed([line(str(i), float(i), i) for i in range(1, 6)])   # 1,2,3,4,5
+        self.assertEqual([ln.text for ln, _ in t.ring], ["2", "3", "4", "5"])
+
+    def test_straggler_older_than_window_evicted(self):
+        """乱序行比窗口内最旧还旧: 属窗口外, 按 ts 淘汰."""
+        t = Timeline(RuleSet(), maxlen=4)
+        t.feed([line(str(i), float(i), i) for i in range(1, 6)])   # 环内 2,3,4,5
+        t.feed([line("old", 0.5, 9)])                              # ts=0.5 在窗口外
+        self.assertEqual([ln.text for ln, _ in t.ring], ["2", "3", "4", "5"])
+
+
 if __name__ == "__main__":
     unittest.main()

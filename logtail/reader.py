@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from typing import Dict, List, Optional, Set
 
 from .models import LogLine, SourceConfig
@@ -29,6 +30,7 @@ POLL_INTERVAL = 0.2          # 轮询间隔 (秒)
 SINCE_CAP = 8_000_000        # --since 兜底回读上限 (8MB; 二分定位失败时才用)
 DX_TTL = 5.0                 # dx 结果缓存秒数: 短命 dump 生命周期内每源只跑一次子进程
 BS_PROBE_BYTES = 64 * 1024   # 二分探针的单次读取块
+LIVE_QUEUE_MAX = 200_000     # 实时模式 (TUI/monitor) 队列上限: 持续洪峰下防内存无限涨
 
 
 def _probe_line(fh, pos: int, size: int):
@@ -401,13 +403,13 @@ class LogFollower:
 
     def __init__(self, sources: List[SourceConfig], history: int = 0,
                  since: float = 0.0, anchor: float = 0.0,
-                 encoding: str = "utf-8") -> None:
+                 encoding: str = "utf-8", queue_maxlen: int = 0) -> None:
         self.sources = sources
         self.history = history               # >0 表示启动时回溯末 N 行
         self.since = since                   # >0 表示按时间戳回看最近 N 秒
         self.anchor = anchor                 # >0: since 窗口钉死 [anchor-since, anchor]
         self.encoding = encoding             # 日志文件编码 (GBK 等), reader 解码用
-        self.queue = _UnboundedQueue()
+        self.queue = _UnboundedQueue(queue_maxlen)
         self._seq = itertools.count(1)
         self._lock = threading.Lock()
         self._workers: List[_SourceWorker] = []
@@ -473,32 +475,44 @@ class LogFollower:
 
 
 class _UnboundedQueue:
-    """线程安全的无界队列 (list + Condition 实现)."""
+    """线程安全的队列 (deque + Condition 实现); maxlen>0 时满则丢弃最旧行并累计 dropped.
 
-    def __init__(self) -> None:
-        self._items = []
+    实时模式 (TUI/monitor) 用限长队列, 持续洪峰下防内存无限上涨; agent 一次性
+    dump 用默认不设限(它每轮 drain 全量, 上限由窗口/hard_cap 决定)。
+    """
+
+    def __init__(self, maxlen: int = 0) -> None:
+        self.maxlen = maxlen
+        self._items: deque = deque()
+        self.dropped = 0                # 因超限被丢弃的行数 (实时模式诊断用)
         self._cond = threading.Condition()
 
     def put(self, item: LogLine) -> None:
         with self._cond:
             self._items.append(item)
+            if self.maxlen and len(self._items) > self.maxlen:
+                excess = len(self._items) - self.maxlen
+                for _ in range(excess):
+                    self._items.popleft()
+                self.dropped += excess
             self._cond.notify()
 
     def drain(self) -> List[LogLine]:
         """取出当前全部待处理项."""
         with self._cond:
-            items, self._items = self._items, []
+            items = list(self._items)
+            self._items = deque()
             return items
 
     def take_upto(self, max_n: int) -> List[LogLine]:
         """取出最多 max_n 项, 其余留在队列 (供交互版每帧限流, 防单帧排空卡死)."""
         with self._cond:
-            items, self._items = self._items[:max_n], self._items[max_n:]
-            return items
+            k = min(max_n, len(self._items))
+            return [self._items.popleft() for _ in range(k)]
 
     def clear(self) -> None:
         with self._cond:
-            self._items = []
+            self._items = deque()
 
     def __len__(self) -> int:
         with self._cond:

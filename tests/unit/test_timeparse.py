@@ -8,6 +8,22 @@ from logtail.timeparse import extract_timestamp, parse_timestamp
 NOW = datetime(2026, 8, 27, 12, 0, 0)
 
 
+class TestInvalidFullDate(unittest.TestCase):
+    def test_invalid_values_return_none_not_throw(self):
+        """形似完整日期但数值越界(99点/2月30/闰秒:60): 当"无时间戳"返回 None, 不抛.
+
+        抛 ValueError 会被 reader 线程吞掉, 导致本批后续行静默丢失。
+        """
+        self.assertIsNone(extract_timestamp("[2026-08-27 99:00:00] x"))
+        self.assertIsNone(extract_timestamp("[2026-02-30 10:00:00] x"))
+        self.assertIsNone(extract_timestamp("[2026-08-27 10:00:60] x"))     # 闰秒
+        self.assertIsNone(extract_timestamp("2026-08-27 10:00:60 x"))
+
+    def test_valid_full_date_still_parses(self):
+        hit = extract_timestamp("[2026-08-27 10:00:01.000000] x", NOW)
+        self.assertIsNotNone(hit)
+
+
 class TestBracketTime(unittest.TestCase):
     def test_bracket_hhmmss(self):
         hit = extract_timestamp("[10:20:30] hello", NOW)

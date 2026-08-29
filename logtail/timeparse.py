@@ -45,6 +45,18 @@ def _frac(milli_text: Optional[str]) -> int:
     return int(milli_text.ljust(6, "0")[:6])
 
 
+def _safe_dt(year: int, month: int, day: int, hh: int, mm: int, ss: int):
+    """构造 datetime; 值越界(99点/2月30/闰秒:60 等)返回 None 而非抛 ValueError.
+
+    抛错会被 reader 线程吞掉, 导致"该行时间戳形似日期但非法"时本批之后的行
+    全部静默丢失 (offset 已推进到文件尾, 永不重读)。改成当"无时间戳"最稳。
+    """
+    try:
+        return datetime(year, month, day, hh, mm, ss)
+    except ValueError:
+        return None
+
+
 def _compose(sec_of_day: int, frac_us: int, _now: Optional[datetime]) -> TsKey:
     """把当天第 sec_of_day 秒换算成绝对 epoch (秒数, 微秒)."""
     now = _now or datetime.now()
@@ -74,13 +86,17 @@ def extract_timestamp(line: str, _now: Optional[datetime] = None):
     m = _RE_BRACKET_FULLDATE.match(line)
     if m:
         y, mo, d, hh, mm, ss, frac = m.groups()
-        dt = datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss))
+        dt = _safe_dt(int(y), int(mo), int(d), int(hh), int(mm), int(ss))
+        if dt is None:
+            return None          # 日期非法: 当无时间戳 (不抛错, 防吞掉本批后续行)
         return ((dt.timestamp(), _frac(frac)), m.start(), m.end())
 
     m = _RE_FULLDATE.match(line)
     if m:
         y, mo, d, hh, mm, ss, frac = m.groups()
-        dt = datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss))
+        dt = _safe_dt(int(y), int(mo), int(d), int(hh), int(mm), int(ss))
+        if dt is None:
+            return None          # 日期非法: 当无时间戳
         return ((dt.timestamp(), _frac(frac)), m.start(), m.end())
 
     m = _RE_TIME.match(line)

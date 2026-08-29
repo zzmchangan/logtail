@@ -73,18 +73,32 @@ class Timeline:
     # 数据流入
     # ------------------------------------------------------------------
     def feed(self, lines: List[LogLine]) -> None:
-        """把本批已通过黑名单的行排序后写入缓冲.
+        """把本批已通过黑名单的行写入缓冲, 并保持缓冲全局时间有序.
 
-        lines 为按来源到达的原始行; 这里按 (ts_key, seq) 稳定排序,
-        使同一批内跨文件的行按时间戳正确排列。
+        lines 为按来源到达的原始行; 这里按 (ts_key, seq) 稳定排序, 使同一批内
+        跨文件的行按时间戳正确排列。环内始终保持 (ts_key, seq) 严格有序:
+          - 常规(本批最早也晚于环内最新): 直接追加, 零重排;
+          - 乱序(有源掉队/跨源交错, 本批含更早时间戳): 追加后整环重排一次(罕见)。
+        这样跨源显示是**全局时间有序**的, 而非"每批近似有序"——排序只发生在乱序批,
+        平时 in-order 追加零开销。
         """
         if not lines:
             return
         lines.sort(key=lambda l: (l.ts_key, l.seq))
         self.fed_total += len(lines)
-        for ln in lines:
-            hl = self.ruleset.highlights(ln.text)
-            self.ring.append(ln, hl)
+        items = self.ring._items
+        if not items or lines[0].ts_key > items[-1][0].ts_key:
+            # 常规: 本批最早也晚于环内最新 -> 直接追加 (保持有序)
+            for ln in lines:
+                items.append((ln, self.ruleset.highlights(ln.text)))
+        else:
+            # 乱序: 有源掉队, 追加后整环重排一次 (保持全局时间有序)
+            for ln in lines:
+                items.append((ln, self.ruleset.highlights(ln.text)))
+            items.sort(key=lambda t: (t[0].ts_key, t[0].seq))
+        # 淘汰 ts 最旧 (环定长): 环已按 ts 有序, 最旧在头部
+        if len(items) > self.ring.maxlen:
+            del items[: len(items) - self.ring.maxlen]
 
     def clear(self) -> None:
         self.ring.clear()

@@ -21,8 +21,8 @@ from typing import List, Optional
 from .config import Config
 from .correlate import CorrelationKeys, normalize
 from .models import fmt_hhmmss
-from .reader import LogFollower
-from .rules import RulePatternError, Rule, RuleSet
+from .reader import LIVE_QUEUE_MAX, LogFollower
+from .rules import RulePatternError, Rule, RuleSet, catastrophic_rules
 from .timeline import RingBuffer
 
 # dump 的 backlog(历史窗口)阶段硬上限 (秒): 信号驱动等待"各源读完全部历史行",
@@ -155,7 +155,15 @@ def _build_match_rules(patterns: List[str], cfg: Config) -> List[Rule]:
     """把一组查询词编译成匹配规则 (OR 语义); 复用裸词/re: 逻辑, 继承大小写开关."""
     rs = RuleSet(keywords=patterns or [],
                  case_sensitive=cfg.case_sensitive)
+    _warn_catastrophic(rs.list_highlights(), "--match")
     return rs.list_highlights()
+
+
+def _warn_catastrophic(rules, src: str = "") -> None:
+    """对形似灾难性回溯的正则打一次性提醒 (防它卡死 feed/主循环)."""
+    for r in catastrophic_rules(rules):
+        print(f"logtail: warning: 正则 {r.pattern!r} 形似灾难性回溯(嵌套量词, {src}), "
+              f"在长文本上可能卡死 —— 建议改写成更原子的写法", file=sys.stderr)
 
 
 def _build_exclude_rules(patterns: List[str], cfg: Config) -> List[Rule]:
@@ -163,12 +171,14 @@ def _build_exclude_rules(patterns: List[str], cfg: Config) -> List[Rule]:
     if not patterns:
         return []
     rs = RuleSet(blacklist=patterns, case_sensitive=cfg.case_sensitive)
+    _warn_catastrophic(rs.list_blacklist(), "--exclude")
     return rs.list_blacklist()
 
 
 def _build_blk(cfg: Config) -> RuleSet:
     """构造黑名单+级别过滤的规则集 (agent 采集阶段应用), 继承大小写开关."""
     blk = RuleSet(blacklist=cfg.blacklist, case_sensitive=cfg.case_sensitive)
+    _warn_catastrophic(blk.list_blacklist(), "黑名单")
     if cfg.level:
         try:
             blk.set_level_filter(cfg.level)
@@ -627,7 +637,8 @@ def monitor(cfg: Config, match: Optional[str], lines_n: int,
         return c_raw_val in ln.text        # 未定义 key -> 回退字面子串
 
     follower = LogFollower(cfg.sources, history=cfg.history or lines_n,
-                           since=cfg.since, encoding=cfg.encoding)
+                           since=cfg.since, encoding=cfg.encoding,
+                           queue_maxlen=LIVE_QUEUE_MAX)
     follower.start()
     warned = False
     graces = 0

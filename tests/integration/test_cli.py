@@ -94,7 +94,7 @@ class TestOutputContract(CliCase):
                        "--at", "--keep", "--blacklist-del", "--no-blacklist",
                        "--enable-source", "max-line-len", "回溯深度",
                        "--fail-if-empty", "--encoding", "--fields",
-                       "--stats", "--separator"):
+                       "--stats", "--separator", "灾难性回溯", "全局按时间有序"):
             self.assertIn(needle, r.stdout)
 
     def test_version(self):

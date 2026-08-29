@@ -22,10 +22,27 @@ class RulePatternError(ValueError):
     """正则编译失败时抛出, message 为面向用户的中文提示."""
 
 
+# 形似"灾难性回溯"的启发式: 一个被整体 +/* 量化的组, 组内又含量词 —— 经典的
+# (a+)+ / (.*)+ / (\w+)* 形态, 在长文本上会让 stdlib 的 re 回溯爆炸卡死进程。
+# 只抓最常见的一类, 不保全局; 命中就预警, 而不是等它卡死主循环。
+_CATA_RE = re.compile(r"\([^()]*[+*][^()]*\)[+*]")
+
+
+def looks_catastrophic(expr: str) -> bool:
+    """启发式判断一个正则是否'形似灾难性回溯'(组内含量词且整体再被量化)."""
+    return bool(_CATA_RE.search(expr))
+
+
+def catastrophic_rules(rules: Optional[List["Rule"]]) -> List["Rule"]:
+    """从一组规则里挑出形似灾难性回溯的 (供上层预警; RuleSet.add 只标记不预警)."""
+    return [r for r in (rules or []) if r.is_regex and r.catastrophic]
+
+
 class Rule:
     """单条匹配规则."""
 
-    __slots__ = ("rule_id", "kind", "pattern", "is_regex", "case_sensitive", "_matcher")
+    __slots__ = ("rule_id", "kind", "pattern", "is_regex", "case_sensitive",
+                 "_matcher", "catastrophic")
 
     def __init__(self, rule_id: int, kind: str, pattern: str,
                  case_sensitive: bool = False) -> None:
@@ -34,8 +51,10 @@ class Rule:
         self.pattern = pattern
         self.case_sensitive = case_sensitive
         self.is_regex = pattern.startswith("re:")
+        self.catastrophic = False
         if self.is_regex:
             expr = pattern[3:]
+            self.catastrophic = looks_catastrophic(expr)
             try:
                 # 默认大小写不敏感; case_sensitive 时精确 (re: 目前无法自带关闭)
                 flags = 0 if case_sensitive else re.IGNORECASE
